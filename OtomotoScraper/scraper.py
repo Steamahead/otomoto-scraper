@@ -93,14 +93,14 @@ def get_auction_number(auction_key: str) -> int:
     Checks if an AuctionNumber already exists for the given AuctionKey.
     If it does, returns that number; if not, returns the next sequential number.
     """
-conn_str = (
-    "DRIVER={ODBC Driver 17 for SQL Server};"
-    f"SERVER={os.environ.get('DB_SERVER')};"
-    f"DATABASE={os.environ.get('DB_NAME')};"
-    f"UID={os.environ.get('DB_UID')};"
-    "Authentication=ActiveDirectoryServicePrincipal;"
-    f"PWD={os.environ.get('DB_PWD')};"
-)
+    conn_str = (    # <-- This line now has 4 spaces of indentation
+        "DRIVER={ODBC Driver 17 for SQL Server};"
+        f"SERVER={os.environ.get('DB_SERVER')};"
+        f"DATABASE={os.environ.get('DB_NAME')};"
+        f"UID={os.environ.get('DB_UID')};"
+        "Authentication=ActiveDirectoryServicePrincipal;"
+        f"PWD={os.environ.get('DB_PWD')};"
+    )
     connection = pyodbc.connect(conn_str)
     cursor = connection.cursor()
 
