@@ -121,14 +121,14 @@ def get_auction_number(auction_key: str) -> int:
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
-conn_str = (
-    "DRIVER={ODBC Driver 17 for SQL Server};"
-    f"SERVER={os.environ.get('DB_SERVER')};"
-    f"DATABASE={os.environ.get('DB_NAME')};"
-    f"UID={os.environ.get('DB_UID')};"
-    "Authentication=ActiveDirectoryServicePrincipal;"
-    f"PWD={os.environ.get('DB_PWD')};"
-)
+    conn_str = (
+        "DRIVER={ODBC Driver 17 for SQL Server};"
+        f"SERVER={os.environ.get('DB_SERVER')};"
+        f"DATABASE={os.environ.get('DB_NAME')};"
+        f"UID={os.environ.get('DB_UID')};"
+        "Authentication=ActiveDirectoryServicePrincipal;"
+        f"PWD={os.environ.get('DB_PWD')};"
+    )
     connection = pyodbc.connect(conn_str)
     cursor = connection.cursor()
 
@@ -284,15 +284,8 @@ def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
 def save_page_html(driver, page_num):
     if DEBUG_MODE:
         html = driver.page_source
-        try:
-            with open(f"debug_page_{page_num}.html", "w", encoding="utf-8") as f:
-                f.write(html)
-            debug_print(f"Saved debug_page_{page_num}.html for inspection")
-        except Exception as e:
-            print(f"Could not save HTML: {e}")
-            # In environments where file writing is not allowed, just log a snippet
-            print(f"HTML snippet for page {page_num}: {html[:500]}...")
-
+        # Don't try to save to files in Azure Functions
+        print(f"HTML snippet for page {page_num}: {html[:500]}...")
 
 def extract_cars_from_html(html: str) -> List[Car]:
     cars: List[Car] = []
@@ -442,7 +435,7 @@ def run_scraper():
     processed_counter = 0
 
     try:
-        driver = setup_driver(headless=False)
+        driver = setup_driver(headless=True)
         driver.get(BASE_URL)
         time.sleep(5)
         total_auctions, total_pages = get_total_auction_count_and_pages(driver)
