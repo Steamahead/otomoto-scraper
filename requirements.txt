@@ -1,5 +1,9 @@
+# Core dependencies for web scraping
 beautifulsoup4==4.12.2
-bs4==0.0.1  # Explicit dependency to ensure bs4 module is available
+bs4==0.0.1
+soupsieve>=2.0
 selenium==4.16.0
 pyodbc==4.0.39
-azure-functions
+
+# Azure Functions
+azure-functions>=1.12.0
