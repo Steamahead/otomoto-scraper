@@ -1,5 +1,6 @@
 import datetime
 import logging
+import os  # Add this import
 import azure.functions as func
 from .scraper import run_scraper
 
@@ -12,10 +13,16 @@ def main(mytimer: func.TimerRequest) -> None:
 
     try:
         logging.info('Starting car scraper...')
+        
+        # Check environment variables
+        logging.info(f'DB_SERVER exists: {os.environ.get("DB_SERVER") is not None}')
+        logging.info(f'DB_NAME exists: {os.environ.get("DB_NAME") is not None}')
+        logging.info(f'DB_UID exists: {os.environ.get("DB_UID") is not None}')
+        logging.info(f'DB_PWD exists: {os.environ.get("DB_PWD") is not None}')
+        
         run_scraper()
         logging.info('Car scraper completed successfully')
     except Exception as e:
         logging.error(f'Error in car scraper: {str(e)}')
         import traceback
         logging.error(traceback.format_exc())
-
