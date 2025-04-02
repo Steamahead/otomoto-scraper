@@ -1,5 +1,5 @@
 beautifulsoup4==4.12.2
+bs4==0.0.1  # Explicit dependency to ensure bs4 module is available
 selenium==4.16.0
 pyodbc==4.0.39
 azure-functions
-
