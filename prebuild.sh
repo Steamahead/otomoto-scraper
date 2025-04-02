@@ -9,3 +9,4 @@ pip install beautifulsoup4==4.12.2 bs4==0.0.1 selenium==4.16.0 pyodbc==4.0.39 -t
 # List installed packages
 echo "Installed packages:"
 ls -la ./.python_packages/lib/site-packages
+
