@@ -1,8 +1,0 @@
-.git*
-.venv
-local.settings.json
-test
-.vscode
-.funcignore
-
-
