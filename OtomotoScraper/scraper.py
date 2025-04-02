@@ -1,3 +1,4 @@
+import logging 
 import os
 import csv
 import time
@@ -89,35 +90,40 @@ def compute_auction_key(url: str) -> str:
 
 
 def get_auction_number(auction_key: str) -> int:
-    """
-    Checks if an AuctionNumber already exists for the given AuctionKey.
-    If it does, returns that number; if not, returns the next sequential number.
-    """
-    conn_str = (    # <-- This line now has 4 spaces of indentation
-        "DRIVER={ODBC Driver 17 for SQL Server};"
-        f"SERVER={os.environ.get('DB_SERVER')};"
-        f"DATABASE={os.environ.get('DB_NAME')};"
-        f"UID={os.environ.get('DB_UID')};"
-        "Authentication=ActiveDirectoryServicePrincipal;"
-        f"PWD={os.environ.get('DB_PWD')};"
-    )
-    connection = pyodbc.connect(conn_str)
-    cursor = connection.cursor()
+    """Checks if an AuctionNumber already exists for the given AuctionKey."""
+    logging.info(f"Getting auction number for key: {auction_key}")
+    try:
+        conn_str = (
+            "DRIVER={ODBC Driver 17 for SQL Server};"
+            f"SERVER={os.environ.get('DB_SERVER')};"
+            f"DATABASE={os.environ.get('DB_NAME')};"
+            f"UID={os.environ.get('DB_UID')};"
+            "Authentication=ActiveDirectoryServicePrincipal;"
+            f"PWD={os.environ.get('DB_PWD')};"
+        )
+        logging.info(f"Connection string created (without showing credentials)")
+        connection = pyodbc.connect(conn_str)
+        logging.info("Database connection established")
+        cursor = connection.cursor()
 
-    query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = ? ORDER BY CreatedDate DESC"
-    cursor.execute(query, (auction_key,))
-    row = cursor.fetchone()
-    if row:
-        auction_number = row[0]
-    else:
-        cursor.execute("SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings")
-        max_val = cursor.fetchone()[0]
-        auction_number = max_val + 1
+        query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = ? ORDER BY CreatedDate DESC"
+        cursor.execute(query, (auction_key,))
+        row = cursor.fetchone()
+        if row:
+            auction_number = row[0]
+            logging.info(f"Found existing auction number: {auction_number}")
+        else:
+            cursor.execute("SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings")
+            max_val = cursor.fetchone()[0]
+            auction_number = max_val + 1
+            logging.info(f"Created new auction number: {auction_number}")
 
-    cursor.close()
-    connection.close()
-    return auction_number
-
+        cursor.close()
+        connection.close()
+        return auction_number
+    except Exception as e:
+        logging.error(f"Error in get_auction_number: {str(e)}")
+        raise              
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
@@ -424,7 +430,7 @@ def write_to_csv(cars: List[Car]) -> None:
 # Main Scraper Function
 # ---------------------------
 def run_scraper():
-    print(f"[DEBUG] run_scraper starting at {datetime.now()}")
+    logging.info(f"[DEBUG] run_scraper starting at {datetime.now()}")
     driver = None
     all_cars: List[Car] = []
 
@@ -435,12 +441,15 @@ def run_scraper():
     processed_counter = 0
 
     try:
+        logging.info("Setting up Chrome driver...")
         driver = setup_driver(headless=True)
+        logging.info("Chrome driver setup complete. Navigating to base URL...")
         driver.get(BASE_URL)
         time.sleep(5)
+        logging.info("Page loaded. Getting auction count...")
         total_auctions, total_pages = get_total_auction_count_and_pages(driver)
-        print(f"Total auctions found on the site: {total_auctions}")
-        print(f"Estimated total pages: {total_pages}")
+        logging.info(f"Total auctions found on the site: {total_auctions}")
+        logging.info(f"Estimated total pages: {total_pages}")
         save_page_html(driver, 1)
         pages_to_check = min(total_pages, MAX_PAGES_TO_CHECK)
 
