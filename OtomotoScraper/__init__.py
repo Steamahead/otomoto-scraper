@@ -26,3 +26,4 @@ def main(mytimer: func.TimerRequest) -> None:
         logging.error(f'Error in car scraper: {str(e)}')
         import traceback
         logging.error(traceback.format_exc())
+        
