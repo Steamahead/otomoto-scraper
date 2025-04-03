@@ -98,7 +98,6 @@ def get_auction_number(auction_key: str) -> int:
         f"SERVER={os.environ.get('DB_SERVER')};"
         f"DATABASE={os.environ.get('DB_NAME')};"
         f"UID={os.environ.get('DB_UID')};"
-        "Authentication=ActiveDirectoryServicePrincipal;"
         f"PWD={os.environ.get('DB_PWD')};"
     )
     connection = pyodbc.connect(conn_str)
@@ -126,7 +125,6 @@ def insert_into_db(car: Car) -> int:
         f"SERVER={os.environ.get('DB_SERVER')};"
         f"DATABASE={os.environ.get('DB_NAME')};"
         f"UID={os.environ.get('DB_UID')};"
-        "Authentication=ActiveDirectoryServicePrincipal;"
         f"PWD={os.environ.get('DB_PWD')};"
     )
     connection = pyodbc.connect(conn_str)
