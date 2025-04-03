@@ -93,87 +93,106 @@ def get_auction_number(auction_key: str) -> int:
     Checks if an AuctionNumber already exists for the given AuctionKey.
     If it does, returns that number; if not, returns the next sequential number.
     """
-    conn_str = (    # <-- This line now has 4 spaces of indentation
-        "DRIVER={ODBC Driver 17 for SQL Server};"
-        f"SERVER={os.environ.get('DB_SERVER')};"
-        f"DATABASE={os.environ.get('DB_NAME')};"
-        f"UID={os.environ.get('DB_UID')};"
-        f"PWD={os.environ.get('DB_PWD')};"
-    )
-    connection = pyodbc.connect(conn_str)
-    cursor = connection.cursor()
+    import logging
+    
+    logging.info(f"Getting auction number for key: {auction_key}")
+    try:
+        conn_str = (
+            "Driver={FreeTDS};"
+            f"Server={os.environ.get('DB_SERVER')};"
+            f"Database={os.environ.get('DB_NAME')};"
+            f"Uid={os.environ.get('DB_UID')};"
+            f"Pwd={os.environ.get('DB_PWD')};"
+            "TrustServerCertificate=yes;"
+        )
+        logging.info("Attempting database connection for get_auction_number...")
+        connection = pyodbc.connect(conn_str)
+        cursor = connection.cursor()
 
-    query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = ? ORDER BY CreatedDate DESC"
-    cursor.execute(query, (auction_key,))
-    row = cursor.fetchone()
-    if row:
-        auction_number = row[0]
-    else:
-        cursor.execute("SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings")
-        max_val = cursor.fetchone()[0]
-        auction_number = max_val + 1
+        query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = ? ORDER BY CreatedDate DESC"
+        cursor.execute(query, (auction_key,))
+        row = cursor.fetchone()
+        if row:
+            auction_number = row[0]
+            logging.info(f"Found existing auction number: {auction_number}")
+        else:
+            cursor.execute("SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings")
+            max_val = cursor.fetchone()[0]
+            auction_number = max_val + 1
+            logging.info(f"Created new auction number: {auction_number}")
 
-    cursor.close()
-    connection.close()
-    return auction_number
-
+        cursor.close()
+        connection.close()
+        return auction_number
+    except Exception as e:
+        logging.error(f"Error in get_auction_number: {str(e)}")
+        # Since we can't get a valid auction number, return a default
+        return 1000000  # Return a large default number to avoid conflicts
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
-    conn_str = (
-        "DRIVER={ODBC Driver 17 for SQL Server};"
-        f"SERVER={os.environ.get('DB_SERVER')};"
-        f"DATABASE={os.environ.get('DB_NAME')};"
-        f"UID={os.environ.get('DB_UID')};"
-        f"PWD={os.environ.get('DB_PWD')};"
-    )
-    connection = pyodbc.connect(conn_str)
-    cursor = connection.cursor()
-
+    import logging
+    
     try:
-        auction_key = compute_auction_key(car.link)
-        auction_number = get_auction_number(auction_key)
-
-        insert_query = """
-           INSERT INTO Listings (
-               ListingURL, AuctionKey, AuctionNumber, FullName, Description, Year, Mileage, EngineCapacity,
-               FuelType, City, Voivodship, SellerType, ScrapeDate, ListingStatus, Version, Price
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-           SELECT SCOPE_IDENTITY();
-           """
-        params = (
-            car.link,
-            auction_key,
-            auction_number,
-            car.full_name,
-            car.description,
-            car.year,
-            car.mileage_km,
-            car.engine_capacity,
-            car.fuel_type,
-            car.city,
-            car.voivodship,
-            car.seller_type,
-            car.scrape_date,
-            car.listing_status,
-            car.version,
-            car.price_pln
+        conn_str = (
+            "Driver={FreeTDS};"
+            f"Server={os.environ.get('DB_SERVER')};"
+            f"Database={os.environ.get('DB_NAME')};"
+            f"Uid={os.environ.get('DB_UID')};"
+            f"Pwd={os.environ.get('DB_PWD')};"
+            "TrustServerCertificate=yes;"
         )
+        
+        logging.info(f"Attempting database insertion for car: {car.full_name[:30]}...")
+        connection = pyodbc.connect(conn_str)
+        cursor = connection.cursor()
 
-        cursor.execute(insert_query, params)
-        cursor.nextset()  # Advance to the result set containing SCOPE_IDENTITY()
-        listing_id = cursor.fetchone()[0]
-        connection.commit()
-        print(f"Successfully inserted car: {car.full_name} with ID: {listing_id}")
-        return listing_id
+        try:
+            auction_key = compute_auction_key(car.link)
+            auction_number = get_auction_number(auction_key)
+
+            insert_query = """
+               INSERT INTO Listings (
+                   ListingURL, AuctionKey, AuctionNumber, FullName, Description, Year, Mileage, EngineCapacity,
+                   FuelType, City, Voivodship, SellerType, ScrapeDate, ListingStatus, Version, Price
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+               SELECT SCOPE_IDENTITY();
+               """
+            params = (
+                car.link,
+                auction_key,
+                auction_number,
+                car.full_name,
+                car.description,
+                car.year,
+                car.mileage_km,
+                car.engine_capacity,
+                car.fuel_type,
+                car.city,
+                car.voivodship,
+                car.seller_type,
+                car.scrape_date,
+                car.listing_status,
+                car.version,
+                car.price_pln
+            )
+
+            cursor.execute(insert_query, params)
+            cursor.nextset()  # Advance to the result set containing SCOPE_IDENTITY()
+            listing_id = cursor.fetchone()[0]
+            connection.commit()
+            logging.info(f"Successfully inserted car: {car.full_name} with ID: {listing_id}")
+            return listing_id
+        except Exception as e:
+            connection.rollback()
+            logging.error(f"Error inserting car {car.full_name}: {str(e)}")
+            return None
+        finally:
+            cursor.close()
+            connection.close()
     except Exception as e:
-        connection.rollback()
-        print(f"Error inserting car {car.full_name}: {e}")
+        logging.error(f"Database connection error: {str(e)}")
         return None
-    finally:
-        cursor.close()
-        connection.close()
-
 
 def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
     candidate = candidate.lower()
