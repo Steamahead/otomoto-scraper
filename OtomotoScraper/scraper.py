@@ -87,29 +87,26 @@ def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
     return hashlib.md5(url.encode('utf-8')).hexdigest()
 
-
 def get_auction_number(auction_key: str) -> int:
     """
     Checks if an AuctionNumber already exists for the given AuctionKey.
     If it does, returns that number; if not, returns the next sequential number.
     """
     import logging
+    import pymssql  # Use pymssql instead of pyodbc
     
     logging.info(f"Getting auction number for key: {auction_key}")
     try:
-        conn_str = (
-            "Driver={FreeTDS};"
-            f"Server={os.environ.get('DB_SERVER')};"
-            f"Database={os.environ.get('DB_NAME')};"
-            f"Uid={os.environ.get('DB_UID')};"
-            f"Pwd={os.environ.get('DB_PWD')};"
-            "TrustServerCertificate=yes;"
+        connection = pymssql.connect(
+            server=os.environ.get('DB_SERVER'),
+            database=os.environ.get('DB_NAME'),
+            user=os.environ.get('DB_UID'),
+            password=os.environ.get('DB_PWD')
         )
-        logging.info("Attempting database connection for get_auction_number...")
-        connection = pyodbc.connect(conn_str)
+        logging.info("Database connection established")
         cursor = connection.cursor()
 
-        query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = ? ORDER BY CreatedDate DESC"
+        query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = %s ORDER BY CreatedDate DESC"
         cursor.execute(query, (auction_key,))
         row = cursor.fetchone()
         if row:
@@ -132,19 +129,16 @@ def get_auction_number(auction_key: str) -> int:
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
     import logging
+    import pymssql  # Use pymssql instead of pyodbc
     
+    logging.info(f"Inserting into database: {car.full_name[:30]}")
     try:
-        conn_str = (
-            "Driver={FreeTDS};"
-            f"Server={os.environ.get('DB_SERVER')};"
-            f"Database={os.environ.get('DB_NAME')};"
-            f"Uid={os.environ.get('DB_UID')};"
-            f"Pwd={os.environ.get('DB_PWD')};"
-            "TrustServerCertificate=yes;"
+        connection = pymssql.connect(
+            server=os.environ.get('DB_SERVER'),
+            database=os.environ.get('DB_NAME'),
+            user=os.environ.get('DB_UID'),
+            password=os.environ.get('DB_PWD')
         )
-        
-        logging.info(f"Attempting database insertion for car: {car.full_name[:30]}...")
-        connection = pyodbc.connect(conn_str)
         cursor = connection.cursor()
 
         try:
@@ -155,7 +149,7 @@ def insert_into_db(car: Car) -> int:
                INSERT INTO Listings (
                    ListingURL, AuctionKey, AuctionNumber, FullName, Description, Year, Mileage, EngineCapacity,
                    FuelType, City, Voivodship, SellerType, ScrapeDate, ListingStatus, Version, Price
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+               ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                SELECT SCOPE_IDENTITY();
                """
             params = (
@@ -178,7 +172,6 @@ def insert_into_db(car: Car) -> int:
             )
 
             cursor.execute(insert_query, params)
-            cursor.nextset()  # Advance to the result set containing SCOPE_IDENTITY()
             listing_id = cursor.fetchone()[0]
             connection.commit()
             logging.info(f"Successfully inserted car: {car.full_name} with ID: {listing_id}")
