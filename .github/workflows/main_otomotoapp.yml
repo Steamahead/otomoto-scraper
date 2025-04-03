@@ -40,7 +40,7 @@ jobs:
           # Create Python packages directory
           mkdir -p .python_packages/lib/site-packages
           # Install dependencies directly to package directory
-          pip install beautifulsoup4==4.12.2 bs4==0.0.1 selenium==4.16.0 pyodbc==4.0.39 pymssql==2.2.7 microsoft-data-sqlclient==6.0.2 azure-functions -t ./.python_packages/lib/site-packages
+          pip install beautifulsoup4==4.12.2 bs4==0.0.1 selenium==4.16.0 pyodbc==4.0.39 pymssql==2.2.7 azure-functions -t ./.python_packages/lib/site-packages
           # Install for build environment too
           pip install -r requirements.txt
 
@@ -87,4 +87,3 @@ jobs:
           app-name: 'OtomotoApp'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          
