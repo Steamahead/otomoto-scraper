@@ -63,7 +63,6 @@ class Car:
     version: str  # DS version/inspiration (from fuzzy lookup)
     data_id: str  # Original data-id from HTML
 
-
 # ---------------------------
 # Utility Functions
 # ---------------------------
