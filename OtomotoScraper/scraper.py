@@ -82,32 +82,32 @@ def basic_url_cleanup(url: str) -> str:
 
     return url
 # Add this after your utility functions but before get_auction_number and insert_into_db
+# Function to get SQL connection using pymssql
 def get_sql_connection():
-    """Get SQL connection using managed identity"""
+    """Get SQL connection using pymssql and environment variables"""
     import logging
     import os
-    import clr
-    import sys
     
     try:
-        # Log the Python path to help with troubleshooting
-        logging.info(f"Python path: {sys.path}")
+        # Import here to avoid issues if package is missing
+        import pymssql
         
-        # Add reference to Microsoft.Data.SqlClient
-        clr.AddReference('Microsoft.Data.SqlClient')
-        from Microsoft.Data.SqlClient import SqlConnection
+        server = os.environ.get('DB_SERVER')
+        database = os.environ.get('DB_NAME')
+        username = os.environ.get('DB_UID')
+        password = os.environ.get('DB_PWD')
         
-        # Connection string for managed identity
-        conn_str = (
-            f"Server={os.environ.get('DB_SERVER')};"
-            f"Database={os.environ.get('DB_NAME')};"
-            "Authentication=ActiveDirectoryManagedIdentity;"
+        logging.info(f"Connecting to SQL server: {server}/{database} as {username}")
+        
+        # Connect using pymssql
+        connection = pymssql.connect(
+            server=server,
+            user=username,
+            password=password,
+            database=database
         )
         
-        logging.info(f"Connecting to SQL server using managed identity")
-        connection = SqlConnection(conn_str)
-        connection.Open()
-        logging.info("SQL connection successful with managed identity")
+        logging.info("SQL connection successful")
         return connection
     except Exception as e:
         logging.error(f"SQL connection error: {str(e)}")
@@ -117,6 +117,7 @@ def get_sql_connection():
 
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
+    import hashlib
     return hashlib.md5(url.encode('utf-8')).hexdigest()
 
 def get_auction_number(auction_key: str) -> int:
@@ -126,58 +127,67 @@ def get_auction_number(auction_key: str) -> int:
     import logging
     
     logging.info(f"Getting auction number for key: {auction_key}")
+    connection = None
+    
     try:
         connection = get_sql_connection()
         if not connection:
             logging.error("Failed to establish database connection")
             return 1000000  # Default value
             
-        # Create a SqlCommand
-        from Microsoft.Data.SqlClient import SqlCommand
+        cursor = connection.cursor()
         
         # Check for existing auction number
-        query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = @AuctionKey ORDER BY CreatedDate DESC"
-        command = SqlCommand(query, connection)
-        command.Parameters.AddWithValue("@AuctionKey", auction_key)
+        query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = %s ORDER BY CreatedDate DESC"
+        cursor.execute(query, (auction_key,))
+        row = cursor.fetchone()
         
-        reader = command.ExecuteReader()
-        if reader.Read():
-            auction_number = reader.GetInt32(0)
-            reader.Close()
+        if row:
+            auction_number = row[0]
             logging.info(f"Found existing auction number: {auction_number}")
         else:
-            reader.Close()
             # Get max auction number
             max_query = "SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings"
-            max_command = SqlCommand(max_query, connection)
-            max_val = int(max_command.ExecuteScalar())
-            auction_number = max_val + 1
+            cursor.execute(max_query)
+            max_val = cursor.fetchone()[0]
+            auction_number = int(max_val) + 1 
             logging.info(f"Created new auction number: {auction_number}")
 
-        connection.Close()
         return auction_number
     except Exception as e:
         logging.error(f"Error in get_auction_number: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
         return 1000000  # Default value
+    finally:
+        if connection:
+            try:
+                connection.close()
+                logging.debug("Connection closed in get_auction_number")
+            except Exception as close_error:
+                logging.warning(f"Error closing connection: {str(close_error)}")
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
     import logging
     
     logging.info(f"Inserting into database: {car.full_name[:30]}")
+    connection = None
+    cursor = None
+    
     try:
         connection = get_sql_connection()
         if not connection:
             logging.error(f"Failed to establish database connection for car: {car.full_name}")
             return None
             
-        # Import SqlClient classes
-        from Microsoft.Data.SqlClient import SqlCommand
-
+        cursor = connection.cursor()
+        
         try:
             auction_key = compute_auction_key(car.link)
             auction_number = get_auction_number(auction_key)
 
+            # For pymssql, use %s placeholders
             insert_query = """
                INSERT INTO Listings (
                    ListingURL, AuctionKey, AuctionNumber, FullName, Description, Year, Mileage, EngineCapacity,
@@ -185,6 +195,7 @@ def insert_into_db(car: Car) -> int:
                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                SELECT SCOPE_IDENTITY();
                """
+               
             params = (
                 car.link,
                 auction_key,
@@ -210,16 +221,24 @@ def insert_into_db(car: Car) -> int:
             logging.info(f"Successfully inserted car: {car.full_name} with ID: {listing_id}")
             return listing_id
         except Exception as e:
-            connection.rollback()
+            if connection:
+                connection.rollback()
             logging.error(f"Error inserting car {car.full_name}: {str(e)}")
+            import traceback
+            logging.error(traceback.format_exc())
             return None
-        finally:
-            cursor.close()
-            connection.close()
     except Exception as e:
         logging.error(f"Database connection error: {str(e)}")
         return None
-
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            try:
+                connection.close()
+                logging.debug("Connection closed in insert_into_db")
+            except Exception as close_error:
+                logging.warning(f"Error closing connection: {str(close_error)}")
 def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
     candidate = candidate.lower()
     text = text.lower()
