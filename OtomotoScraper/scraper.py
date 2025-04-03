@@ -81,7 +81,25 @@ def basic_url_cleanup(url: str) -> str:
         url = 'https://www.otomoto.pl' + url
 
     return url
-
+# Add this after your utility functions but before get_auction_number and insert_into_db
+def get_sql_connection():
+    """Get SQL connection using SQL authentication"""
+    import logging
+    import pymssql
+    
+    try:
+        connection = pymssql.connect(
+            server=os.environ.get('DB_SERVER'),
+            database=os.environ.get('DB_NAME'),
+            user=os.environ.get('DB_UID'),
+            password=os.environ.get('DB_PWD'),
+            as_dict=True  # Return results as dictionaries
+        )
+        logging.info("SQL connection established with SQL authentication")
+        return connection
+    except Exception as e:
+        logging.error(f"SQL connection error: {str(e)}")
+        return None
 
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
@@ -93,28 +111,26 @@ def get_auction_number(auction_key: str) -> int:
     If it does, returns that number; if not, returns the next sequential number.
     """
     import logging
-    import pymssql  # Use pymssql instead of pyodbc
     
     logging.info(f"Getting auction number for key: {auction_key}")
     try:
-        connection = pymssql.connect(
-            server=os.environ.get('DB_SERVER'),
-            database=os.environ.get('DB_NAME'),
-            user=os.environ.get('DB_UID'),
-            password=os.environ.get('DB_PWD')
-        )
-        logging.info("Database connection established")
+        connection = get_sql_connection()
+        if not connection:
+            logging.error("Failed to establish database connection")
+            return 1000000  # Default value
+            
         cursor = connection.cursor()
 
         query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = %s ORDER BY CreatedDate DESC"
         cursor.execute(query, (auction_key,))
         row = cursor.fetchone()
         if row:
-            auction_number = row[0]
+            auction_number = row['AuctionNumber'] if isinstance(row, dict) else row[0]
             logging.info(f"Found existing auction number: {auction_number}")
         else:
             cursor.execute("SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings")
-            max_val = cursor.fetchone()[0]
+            result = cursor.fetchone()
+            max_val = result[''] if isinstance(result, dict) and '' in result else result[0] if result else 0
             auction_number = max_val + 1
             logging.info(f"Created new auction number: {auction_number}")
 
@@ -123,22 +139,19 @@ def get_auction_number(auction_key: str) -> int:
         return auction_number
     except Exception as e:
         logging.error(f"Error in get_auction_number: {str(e)}")
-        # Since we can't get a valid auction number, return a default
-        return 1000000  # Return a large default number to avoid conflicts
+        return 1000000  # Default value
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
     import logging
-    import pymssql  # Use pymssql instead of pyodbc
     
     logging.info(f"Inserting into database: {car.full_name[:30]}")
     try:
-        connection = pymssql.connect(
-            server=os.environ.get('DB_SERVER'),
-            database=os.environ.get('DB_NAME'),
-            user=os.environ.get('DB_UID'),
-            password=os.environ.get('DB_PWD')
-        )
+        connection = get_sql_connection()
+        if not connection:
+            logging.error(f"Failed to establish database connection for car: {car.full_name}")
+            return None
+            
         cursor = connection.cursor()
 
         try:
