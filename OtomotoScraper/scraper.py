@@ -83,22 +83,36 @@ def basic_url_cleanup(url: str) -> str:
     return url
 # Add this after your utility functions but before get_auction_number and insert_into_db
 def get_sql_connection():
-    """Get SQL connection using SQL authentication"""
+    """Get SQL connection using managed identity"""
     import logging
-    import pymssql
+    import os
+    import clr
+    import sys
     
     try:
-        connection = pymssql.connect(
-            server=os.environ.get('DB_SERVER'),
-            database=os.environ.get('DB_NAME'),
-            user=os.environ.get('DB_UID'),
-            password=os.environ.get('DB_PWD'),
-            as_dict=True  # Return results as dictionaries
+        # Log the Python path to help with troubleshooting
+        logging.info(f"Python path: {sys.path}")
+        
+        # Add reference to Microsoft.Data.SqlClient
+        clr.AddReference('Microsoft.Data.SqlClient')
+        from Microsoft.Data.SqlClient import SqlConnection
+        
+        # Connection string for managed identity
+        conn_str = (
+            f"Server={os.environ.get('DB_SERVER')};"
+            f"Database={os.environ.get('DB_NAME')};"
+            "Authentication=ActiveDirectoryManagedIdentity;"
         )
-        logging.info("SQL connection established with SQL authentication")
+        
+        logging.info(f"Connecting to SQL server using managed identity")
+        connection = SqlConnection(conn_str)
+        connection.Open()
+        logging.info("SQL connection successful with managed identity")
         return connection
     except Exception as e:
         logging.error(f"SQL connection error: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
         return None
 
 def compute_auction_key(url: str) -> str:
@@ -108,7 +122,6 @@ def compute_auction_key(url: str) -> str:
 def get_auction_number(auction_key: str) -> int:
     """
     Checks if an AuctionNumber already exists for the given AuctionKey.
-    If it does, returns that number; if not, returns the next sequential number.
     """
     import logging
     
@@ -119,23 +132,29 @@ def get_auction_number(auction_key: str) -> int:
             logging.error("Failed to establish database connection")
             return 1000000  # Default value
             
-        cursor = connection.cursor()
-
-        query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = %s ORDER BY CreatedDate DESC"
-        cursor.execute(query, (auction_key,))
-        row = cursor.fetchone()
-        if row:
-            auction_number = row['AuctionNumber'] if isinstance(row, dict) else row[0]
+        # Create a SqlCommand
+        from Microsoft.Data.SqlClient import SqlCommand
+        
+        # Check for existing auction number
+        query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = @AuctionKey ORDER BY CreatedDate DESC"
+        command = SqlCommand(query, connection)
+        command.Parameters.AddWithValue("@AuctionKey", auction_key)
+        
+        reader = command.ExecuteReader()
+        if reader.Read():
+            auction_number = reader.GetInt32(0)
+            reader.Close()
             logging.info(f"Found existing auction number: {auction_number}")
         else:
-            cursor.execute("SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings")
-            result = cursor.fetchone()
-            max_val = result[''] if isinstance(result, dict) and '' in result else result[0] if result else 0
+            reader.Close()
+            # Get max auction number
+            max_query = "SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings"
+            max_command = SqlCommand(max_query, connection)
+            max_val = int(max_command.ExecuteScalar())
             auction_number = max_val + 1
             logging.info(f"Created new auction number: {auction_number}")
 
-        cursor.close()
-        connection.close()
+        connection.Close()
         return auction_number
     except Exception as e:
         logging.error(f"Error in get_auction_number: {str(e)}")
@@ -152,7 +171,8 @@ def insert_into_db(car: Car) -> int:
             logging.error(f"Failed to establish database connection for car: {car.full_name}")
             return None
             
-        cursor = connection.cursor()
+        # Import SqlClient classes
+        from Microsoft.Data.SqlClient import SqlCommand
 
         try:
             auction_key = compute_auction_key(car.link)
