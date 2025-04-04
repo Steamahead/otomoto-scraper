@@ -66,41 +66,39 @@ class Car:
 # Database Functions
 # ---------------------------
 def get_sql_connection():
-    """Get SQL connection using managed identity"""
+    """Get SQL connection using SQL authentication only"""
     import logging
     import os
     
     try:
-        # Try connecting with Azure Identity
-        from azure.identity import DefaultAzureCredential
-        import pyodbc
+        # Import pymssql directly
+        import pymssql
         
+        # Get connection details from environment variables
         server = os.environ.get('DB_SERVER')
         database = os.environ.get('DB_NAME')
+        username = os.environ.get('DB_UID')
+        password = os.environ.get('DB_PWD')
         
-        logging.info(f"Connecting to SQL server with managed identity: {server}/{database}")
+        logging.info(f"Connecting to SQL server with SQL auth: {server}/{database} as {username}")
         
-        # Get token from managed identity
-        credential = DefaultAzureCredential()
-        token = credential.get_token("https://database.windows.net/.default")
-        
-        # Create connection
-        connection_string = (
-            f"Driver={{ODBC Driver 17 for SQL Server}};"
-            f"Server={server};"
-            f"Database={database};"
-            "Authentication=ActiveDirectoryServicePrincipal;"
+        # Connect using pymssql with SQL authentication
+        connection = pymssql.connect(
+            server=server,
+            user=username,
+            password=password,
+            database=database,
+            timeout=30,
+            appname="AzureFunctionsApp"
         )
         
-        connection = pyodbc.connect(connection_string, attrs_before={1256: token.token})
-        logging.info("SQL connection successful with managed identity")
+        logging.info("SQL connection successful with SQL auth")
         return connection
     except Exception as e:
         logging.error(f"SQL connection error: {str(e)}")
         import traceback
         logging.error(traceback.format_exc())
         return None
-
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
     return hashlib.md5(url.encode('utf-8')).hexdigest()
