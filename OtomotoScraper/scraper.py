@@ -66,30 +66,34 @@ class Car:
 # Database Functions
 # ---------------------------
 def get_sql_connection():
-    """Get SQL connection using pymssql and environment variables"""
+    """Get SQL connection using managed identity"""
     import logging
     import os
     
     try:
-        # Import here to avoid issues if package is missing
-        import pymssql
+        # Try connecting with Azure Identity
+        from azure.identity import DefaultAzureCredential
+        import pyodbc
         
         server = os.environ.get('DB_SERVER')
         database = os.environ.get('DB_NAME')
-        username = os.environ.get('DB_UID')
-        password = os.environ.get('DB_PWD')
         
-        logging.info(f"Connecting to SQL server: {server}/{database} as {username}")
+        logging.info(f"Connecting to SQL server with managed identity: {server}/{database}")
         
-        # Connect using pymssql
-        connection = pymssql.connect(
-            server=server,
-            user=username,
-            password=password,
-            database=database
+        # Get token from managed identity
+        credential = DefaultAzureCredential()
+        token = credential.get_token("https://database.windows.net/.default")
+        
+        # Create connection
+        connection_string = (
+            f"Driver={{ODBC Driver 17 for SQL Server}};"
+            f"Server={server};"
+            f"Database={database};"
+            "Authentication=ActiveDirectoryServicePrincipal;"
         )
         
-        logging.info("SQL connection successful")
+        connection = pyodbc.connect(connection_string, attrs_before={1256: token.token})
+        logging.info("SQL connection successful with managed identity")
         return connection
     except Exception as e:
         logging.error(f"SQL connection error: {str(e)}")
