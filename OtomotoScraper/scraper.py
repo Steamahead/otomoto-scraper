@@ -3,15 +3,14 @@ import csv
 import time
 import re
 import hashlib
+import logging
+import requests
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import List, Tuple, Set, Dict
 
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-import pyodbc
 import tempfile
 
 # ---------------------------
@@ -42,7 +41,6 @@ CANDIDATE_VERSIONS = [
     "La Premiere"
 ]
 
-
 @dataclass
 class Car:
     auction_id: str  # External ID
@@ -63,25 +61,10 @@ class Car:
     version: str  # DS version/inspiration (from fuzzy lookup)
     data_id: str  # Original data-id from HTML
 
+
 # ---------------------------
-# Utility Functions
+# Database Functions
 # ---------------------------
-def debug_print(message):
-    if DEBUG_MODE:
-        print(f"[DEBUG] {message}")
-
-
-def basic_url_cleanup(url: str) -> str:
-    """Very basic URL cleanup - just handle relative URLs"""
-    url = url.strip()
-
-    # Convert relative URL to absolute
-    if url.startswith('/'):
-        url = 'https://www.otomoto.pl' + url
-
-    return url
-# Add this after your utility functions but before get_auction_number and insert_into_db
-# Function to get SQL connection using pymssql
 def get_sql_connection():
     """Get SQL connection using pymssql and environment variables"""
     import logging
@@ -116,15 +99,10 @@ def get_sql_connection():
 
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
-    import hashlib
     return hashlib.md5(url.encode('utf-8')).hexdigest()
 
 def get_auction_number(auction_key: str) -> int:
-    """
-    Checks if an AuctionNumber already exists for the given AuctionKey.
-    """
-    import logging
-    
+    """Checks if an AuctionNumber already exists for the given AuctionKey."""
     logging.info(f"Getting auction number for key: {auction_key}")
     connection = None
     
@@ -168,8 +146,6 @@ def get_auction_number(auction_key: str) -> int:
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
-    import logging
-    
     logging.info(f"Inserting into database: {car.full_name[:30]}")
     connection = None
     cursor = None
@@ -238,6 +214,24 @@ def insert_into_db(car: Car) -> int:
                 logging.debug("Connection closed in insert_into_db")
             except Exception as close_error:
                 logging.warning(f"Error closing connection: {str(close_error)}")
+
+# ---------------------------
+# Utility Functions
+# ---------------------------
+def debug_print(message):
+    if DEBUG_MODE:
+        logging.info(f"[DEBUG] {message}")
+
+def basic_url_cleanup(url: str) -> str:
+    """Very basic URL cleanup - just handle relative URLs"""
+    url = url.strip()
+
+    # Convert relative URL to absolute
+    if url.startswith('/'):
+        url = 'https://www.otomoto.pl' + url
+
+    return url
+
 def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
     candidate = candidate.lower()
     text = text.lower()
@@ -248,13 +242,11 @@ def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
             return True
     return False
 
-
 def extract_version(full_name: str, description: str) -> str:
     for cand in CANDIDATE_VERSIONS:
         if fuzzy_contains(cand, full_name, 0.9) or fuzzy_contains(cand, description, 0.9):
             return cand
     return ""
-
 
 def parse_location(location_str: str) -> Tuple[str, str]:
     if "(" in location_str and location_str.endswith(")"):
@@ -262,46 +254,39 @@ def parse_location(location_str: str) -> Tuple[str, str]:
         return city.strip(), voivodship.rstrip(")").strip()
     return location_str.strip(), ""
 
-
-def setup_driver(headless: bool = False) -> webdriver.Chrome:
-    chrome_options = Options()
-    if headless:
-        chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36")
-
-    # Create a unique temporary directory for Chrome's user data
-    unique_user_data_dir = tempfile.mkdtemp(prefix=f"chrome_user_data_{int(time.time() * 1000)}_")
-    print(f"[DEBUG] Using unique user data directory: {unique_user_data_dir}")
-    chrome_options.add_argument(f"--user-data-dir={unique_user_data_dir}")
-
-    driver = webdriver.Chrome(options=chrome_options)
-    driver.implicitly_wait(10)
-    return driver
-
-
-def scroll_page(driver, max_scrolls: int = 10, wait: float = 2.0) -> None:
-    last_height = driver.execute_script("return document.body.scrollHeight")
-    for i in range(max_scrolls):
-        driver.execute_script("window.scrollBy(0, 500);")
-        time.sleep(wait)
-        new_height = driver.execute_script("return document.body.scrollHeight")
-        if new_height == last_height:
-            print(f"Scrolling stabilized after {i + 1} scrolls.")
-            break
-        last_height = new_height
-
-
-def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
+# ---------------------------
+# Web Scraping Functions
+# ---------------------------
+def get_page_html(url: str) -> str:
+    """Get page HTML using requests instead of Selenium"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36',
+        'Accept-Language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Referer': 'https://www.otomoto.pl/',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Pragma': 'no-cache',
+        'Cache-Control': 'no-cache'
+    }
+    
     try:
-        html = driver.page_source
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()  # Raise an exception for HTTP errors
+        return response.text
+    except Exception as e:
+        logging.error(f"Error fetching URL {url}: {str(e)}")
+        return ""
+
+def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
+    try:
         soup = BeautifulSoup(html, "html.parser")
         total_auctions = 0
         total_pages = 1
+        
+        # Find total auctions from h1 text
         h1_tag = soup.find("h1")
         if h1_tag:
             h1_text = h1_tag.get_text()
@@ -309,6 +294,8 @@ def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
             if match:
                 total_auctions = int(match.group(1))
                 debug_print(f"Found total auctions from h1: {total_auctions}")
+        
+        # Find total auctions from text if not found in h1
         if total_auctions == 0:
             texts_with_counts = soup.find_all(string=re.compile(r'\d+\s+ogłosz'))
             for text in texts_with_counts:
@@ -317,6 +304,8 @@ def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
                     total_auctions = int(match.group(1))
                     debug_print(f"Found total auctions from text: {total_auctions}")
                     break
+        
+        # Find pagination
         pagination = soup.find("ul", class_=lambda x: x and "pagination" in x)
         if pagination:
             page_numbers = [int(li.get_text(strip=True)) for li in pagination.find_all("li")
@@ -324,44 +313,50 @@ def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
             if page_numbers:
                 total_pages = max(page_numbers)
                 debug_print(f"Found total pages from pagination: {total_pages}")
+        
+        # Calculate total pages if not found
         if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
             total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
             debug_print(f"Estimated total pages from auction count: {total_pages}")
+        
+        # Calculate total auctions if not found
         if total_auctions == 0 and total_pages > 1:
             total_auctions = total_pages * EXPECTED_PER_PAGE
             debug_print(f"Estimated total auctions from page count: {total_auctions}")
+        
+        # Use defaults if nothing found
         if total_auctions == 0:
             total_auctions = 320
             debug_print(f"Using default auction count: {total_auctions}")
         if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
             total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
             debug_print(f"Using calculated page count: {total_pages}")
+            
         return total_auctions, total_pages
     except Exception as e:
-        print(f"Error getting auction counts: {e}")
+        logging.error(f"Error getting auction counts: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return 320, 10
-
-
-def save_page_html(driver, page_num):
-    if DEBUG_MODE:
-        html = driver.page_source
-        # Don't try to save to files in Azure Functions
-        print(f"HTML snippet for page {page_num}: {html[:500]}...")
 
 def extract_cars_from_html(html: str) -> List[Car]:
     cars: List[Car] = []
     soup = BeautifulSoup(html, "html.parser")
+    
+    # Find the container with search results
     container = soup.find("div", {"data-testid": "search-results"})
     if not container:
-        print("Search results container not found in HTML!")
+        logging.error("Search results container not found in HTML!")
         return cars
 
+    # Find all listings
     listings = container.find_all("article", attrs={"data-id": True})
     for listing in listings:
         try:
             # Get the data-id attribute
             data_id = listing.get("data-id", "")
 
+            # Extract title and link
             h2_tag = listing.find("h2", class_=lambda c: c and "ooa-1jjzghu" in c)
             if not h2_tag:
                 continue
@@ -376,21 +371,23 @@ def extract_cars_from_html(html: str) -> List[Car]:
 
             full_name = a_tag.get_text(strip=True) if a_tag else ""
 
-            # Use the updated selector for description
+            # Extract description
             desc_tag = listing.find("p", attrs={"data-sentry-element": "SubTitle"})
             full_desc = desc_tag.get_text(strip=True) if desc_tag else ""
             parts = [part.strip() for part in full_desc.split("•") if part.strip()]
 
-            # For engine capacity, assume it's the first part (like "1 997 cm3")
+            # Extract engine capacity
             engine_capacity_text = parts[0] if len(parts) >= 1 else ""
-            # Remove non-digit characters and convert to int:
             engine_capacity_clean = int(re.sub(r'\D', '', engine_capacity_text)) if engine_capacity_text and re.search(
                 r'\d', engine_capacity_text) else 0
 
+            # Extract engine power
             engine_power = parts[1] if len(parts) >= 2 else ""
-            # The rest becomes the description:
+            
+            # Build description from remaining parts
             description = " • ".join(parts[2:]) if len(parts) >= 3 else ""
 
+            # Extract year
             year_tag = listing.find("dd", {"data-parameter": "year"})
             year_str = year_tag.get_text(strip=True) if year_tag else "0"
             try:
@@ -398,18 +395,19 @@ def extract_cars_from_html(html: str) -> List[Car]:
             except ValueError:
                 year = 0
 
+            # Extract mileage
             mileage_tag = listing.find("dd", {"data-parameter": "mileage"})
             mileage_text = mileage_tag.get_text(strip=True) if mileage_tag else ""
-            # Remove non-digits (e.g., "km") and convert:
             mileage_clean = int(re.sub(r'\D', '', mileage_text)) if mileage_text and re.search(r'\d',
                                                                                                mileage_text) else 0
 
+            # Extract fuel type
             fuel_tag = listing.find("dd", {"data-parameter": "fuel_type"})
             fuel_type = fuel_tag.get_text(strip=True) if fuel_tag else ""
-            # Replace "Hybryda" with "Hybryda Plug-in" (case-insensitive)
             if fuel_type.strip().lower() == "hybryda":
                 fuel_type = "Hybryda Plug-in"
 
+            # Extract price
             price_tag = listing.find("h3", attrs={"data-sentry-element": "Price"})
             if price_tag:
                 raw_price = price_tag.get_text(strip=True)
@@ -420,17 +418,21 @@ def extract_cars_from_html(html: str) -> List[Car]:
             else:
                 price_pln = 0
 
+            # Extract location
             location_tag = listing.find("p", class_="ooa-oj1jk2")
             location_str = location_tag.get_text(strip=True) if location_tag else ""
             city, voivodship = parse_location(location_str)
 
+            # Extract seller type
             seller_elem = listing.find("article", class_=lambda c: c and "ooa-12g3tpj" in c)
             seller_text = seller_elem.get_text(strip=True) if seller_elem else "Unknown"
             seller_type = "Prywatny sprzedawca" if seller_text.lower() == "prywatny sprzedawca" else "Firma"
 
+            # Generate other values
             scrape_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             found_version = extract_version(full_name, full_desc)
 
+            # Create Car object
             car = Car(
                 auction_id="",  # Will be set later
                 link=cleaned_link,
@@ -452,81 +454,104 @@ def extract_cars_from_html(html: str) -> List[Car]:
             )
             cars.append(car)
         except Exception as e:
-            print(f"Error parsing listing: {e}")
+            logging.error(f"Error parsing listing: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            
     return cars
 
-
 def write_to_csv(cars: List[Car]) -> None:
-    import tempfile
-    import os
+    try:
+        # Get the system temporary directory
+        temp_dir = tempfile.gettempdir()
+        # Define a path for your CSV file in that directory
+        csv_path = os.path.join(temp_dir, "cars.csv")
 
-    # Get the system temporary directory
-    temp_dir = tempfile.gettempdir()
-    # Define a path for your CSV file in that directory
-    csv_path = os.path.join(temp_dir, "cars.csv")
-
-    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-        fieldnames = [
-            "auction_id", "link", "full_name", "description", "year",
-            "mileage_km", "engine_capacity", "engine_power", "fuel_type",
-            "seller_type", "city", "voivodship", "scrape_date", "listing_status", "version"
-        ]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for car in cars:
-            car_dict = asdict(car)
-            car_dict.pop("price_pln", None)
-            car_dict.pop("data_id", None)  # Don't include this in the CSV
-            writer.writerow(car_dict)
-    print(f"Data saved to file {csv_path} with {len(cars)} unique listings.")
-
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            fieldnames = [
+                "auction_id", "link", "full_name", "description", "year",
+                "mileage_km", "engine_capacity", "engine_power", "fuel_type",
+                "seller_type", "city", "voivodship", "scrape_date", "listing_status", "version"
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for car in cars:
+                car_dict = asdict(car)
+                car_dict.pop("price_pln", None)
+                car_dict.pop("data_id", None)  # Don't include this in the CSV
+                writer.writerow(car_dict)
+        logging.info(f"Data saved to file {csv_path} with {len(cars)} unique listings.")
+    except Exception as e:
+        logging.error(f"Error writing CSV: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
 
 # ---------------------------
 # Main Scraper Function
 # ---------------------------
 def run_scraper():
-    print(f"[DEBUG] run_scraper starting at {datetime.now()}")
-    driver = None
+    logging.info(f"[DEBUG] run_scraper starting at {datetime.now()}")
     all_cars: List[Car] = []
-
-    # NO DUPLICATE DETECTION AT ALL
-    # We're going to process every single listing on every page
-
     auction_counter = 0
     processed_counter = 0
 
     try:
-        driver = setup_driver(headless=True)
-        driver.get(BASE_URL)
-        time.sleep(5)
-        total_auctions, total_pages = get_total_auction_count_and_pages(driver)
-        print(f"Total auctions found on the site: {total_auctions}")
-        print(f"Estimated total pages: {total_pages}")
-        save_page_html(driver, 1)
+        # Get the main page
+        html = get_page_html(BASE_URL)
+        if not html:
+            logging.error("Failed to fetch the main page")
+            return
+            
+        # Get total auctions and pages
+        total_auctions, total_pages = get_total_auction_count_and_pages(html)
+        logging.info(f"Total auctions found on the site: {total_auctions}")
+        logging.info(f"Estimated total pages: {total_pages}")
+        
+        # Process the first page HTML we already have
+        cars_on_page = extract_cars_from_html(html)
+        if cars_on_page:
+            for car in cars_on_page:
+                processed_counter += 1
+                auction_counter += 1
+                mileage_digits = str(car.mileage_km)
+                car.auction_id = f"{auction_counter}_{mileage_digits}_{car.price_pln}"
+                
+                # Insert into DB
+                try:
+                    db_id = insert_into_db(car)
+                    if db_id:
+                        logging.info(f"Database insertion successful, ID: {db_id}")
+                    else:
+                        logging.error("Database insertion failed")
+                except Exception as e:
+                    logging.error(f"Error during database insertion: {e}")
+                
+                all_cars.append(car)
+        
+        # Determine how many pages to check
         pages_to_check = min(total_pages, MAX_PAGES_TO_CHECK)
-
-        for current_page in range(1, pages_to_check + 1):
-            page_url = BASE_URL if current_page == 1 else f"{BASE_URL}&page={current_page}"
-            print(f"\nFetching page {current_page} of {pages_to_check}: {page_url}")
-            driver.get(page_url)
-            time.sleep(5)
-            scroll_page(driver, max_scrolls=10, wait=2)
-            save_page_html(driver, current_page)
-            html = driver.page_source
+        
+        # Now process remaining pages
+        for current_page in range(2, pages_to_check + 1):
+            page_url = f"{BASE_URL}&page={current_page}"
+            logging.info(f"\nFetching page {current_page} of {pages_to_check}: {page_url}")
+            
+            html = get_page_html(page_url)
+            if not html:
+                logging.error(f"Failed to fetch page {current_page}")
+                continue
+                
             cars_on_page = extract_cars_from_html(html)
 
             if not cars_on_page:
-                print(f"No auctions found on page {current_page}. Stopping.")
+                logging.info(f"No auctions found on page {current_page}. Stopping.")
                 break
 
-            print(f"Found {len(cars_on_page)} cars on page {current_page}")
+            logging.info(f"Found {len(cars_on_page)} cars on page {current_page}")
 
             for car in cars_on_page:
                 processed_counter += 1
-
-                # NO DUPLICATE DETECTION AT ALL
-                # Process every car we find
-
+                
                 # Generate auction ID
                 auction_counter += 1
                 mileage_digits = str(car.mileage_km)
@@ -536,31 +561,29 @@ def run_scraper():
                 try:
                     db_id = insert_into_db(car)
                     if db_id:
-                        print(f"Database insertion successful, ID: {db_id}")
+                        logging.info(f"Database insertion successful, ID: {db_id}")
                     else:
-                        print("Database insertion failed")
+                        logging.info("Database insertion failed")
                 except Exception as e:
-                    print(f"Error during database insertion: {e}")
+                    logging.error(f"Error during database insertion: {e}")
 
                 # Add to the list of all cars (for CSV backup)
                 all_cars.append(car)
 
-            print(f"After page {current_page}:")
-            print(f"- Total processed and collected: {processed_counter}")
+            logging.info(f"After page {current_page}:")
+            logging.info(f"- Total processed and collected: {processed_counter}")
+            
+            # Sleep to avoid overloading the server
+            time.sleep(2)
 
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logging.error(f"An error occurred: {e}")
         import traceback
-        traceback.print_exc()
+        logging.error(traceback.format_exc())
 
-    finally:
-        if driver is not None:
-            driver.quit()
-            print("ChromeDriver closed successfully.")
-
-    print(f"[DEBUG] run_scraper ended at {datetime.now()}")
-    print("\n=== FINAL RESULTS ===")
-    print(f"Total auctions processed and collected: {processed_counter}")
+    logging.info(f"[DEBUG] run_scraper ended at {datetime.now()}")
+    logging.info("\n=== FINAL RESULTS ===")
+    logging.info(f"Total auctions processed and collected: {processed_counter}")
     write_to_csv(all_cars)
 
 
