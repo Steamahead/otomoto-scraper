@@ -18,27 +18,7 @@ def main(mytimer: func.TimerRequest) -> None:
         logging.info(f'DB_UID exists: {os.environ.get("DB_UID") is not None}')
         logging.info(f'DB_PWD exists: {os.environ.get("DB_PWD") is not None}')
         
-        # Test database connection directly
-        try:
-            import pyodbc
-            conn_str = (
-                "DRIVER={ODBC Driver 17 for SQL Server};"
-                f"SERVER={os.environ.get('DB_SERVER')};"
-                f"DATABASE={os.environ.get('DB_NAME')};"
-                f"UID={os.environ.get('DB_UID')};"
-                f"PWD={os.environ.get('DB_PWD')};"
-            )
-            logging.info("Testing database connection...")
-            connection = pyodbc.connect(conn_str)
-            cursor = connection.cursor()
-            cursor.execute("SELECT @@VERSION")
-            result = cursor.fetchone()
-            logging.info(f"Database connection successful: {result[0][:30]}...")
-            cursor.close()
-            connection.close()
-        except Exception as e:
-            logging.error(f"Database connection test failed: {str(e)}")
-            
+        # Run the scraper
         run_scraper()
         logging.info('Car scraper completed successfully')
     except Exception as e:
