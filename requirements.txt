@@ -2,8 +2,9 @@
 beautifulsoup4==4.12.2
 bs4==0.0.1
 soupsieve>=2.0
-selenium==4.16.0
+selenium==4.16.0  # Can keep this for backward compatibility
 pyodbc==4.0.39
+requests==2.28.2  # Add this line
 
 # Azure Functions
 azure-functions>=1.12.0
