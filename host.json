@@ -3,8 +3,7 @@
   "logging": {
     "applicationInsights": {
       "samplingSettings": {
-        "isEnabled": true,
-        "excludedTypes": "Request"
+        "isEnabled": false
       }
     }
   },
@@ -13,5 +12,3 @@
     "version": "[3.*, 4.0.0)"
   }
 }
-
-
