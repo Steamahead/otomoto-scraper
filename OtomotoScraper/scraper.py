@@ -99,6 +99,7 @@ def get_sql_connection():
         import traceback
         logging.error(traceback.format_exc())
         return None
+
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
     return hashlib.md5(url.encode('utf-8')).hexdigest()
@@ -265,18 +266,12 @@ def get_page_html(url: str) -> str:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36',
         'Accept-Language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Referer': 'https://www.otomoto.pl/',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1',
-        'Pragma': 'no-cache',
-        'Cache-Control': 'no-cache'
+        'Referer': 'https://www.otomoto.pl/'
     }
     
     try:
         response = requests.get(url, headers=headers, timeout=30)
-        response.raise_for_status()  # Raise an exception for HTTP errors
+        response.raise_for_status()
         return response.text
     except Exception as e:
         logging.error(f"Error fetching URL {url}: {str(e)}")
@@ -337,31 +332,37 @@ def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
         return total_auctions, total_pages
     except Exception as e:
         logging.error(f"Error getting auction counts: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
         return 320, 10
 
 def extract_cars_from_html(html: str) -> List[Car]:
     cars: List[Car] = []
     soup = BeautifulSoup(html, "html.parser")
     
-    # Find the container with search results
+    # Try to find the container with multiple possible selectors
     container = soup.find("div", {"data-testid": "search-results"})
+    if not container:
+        # Try alternative selectors if the primary one fails
+        container = soup.find("div", class_=lambda c: c and "ooa-1e1uucc" in c)
+    
     if not container:
         logging.error("Search results container not found in HTML!")
         return cars
 
     # Find all listings
     listings = container.find_all("article", attrs={"data-id": True})
+    
     for listing in listings:
         try:
             # Get the data-id attribute
             data_id = listing.get("data-id", "")
 
-            # Extract title and link
+            # Get title and link
             h2_tag = listing.find("h2", class_=lambda c: c and "ooa-1jjzghu" in c)
             if not h2_tag:
-                continue
+                # Try alternative selector
+                h2_tag = listing.find("h2", {"data-testid": "ad-title"})
+                if not h2_tag:
+                    continue
 
             a_tag = h2_tag.find("a", href=True)
             raw_link = a_tag["href"] if a_tag else ""
@@ -375,6 +376,10 @@ def extract_cars_from_html(html: str) -> List[Car]:
 
             # Extract description
             desc_tag = listing.find("p", attrs={"data-sentry-element": "SubTitle"})
+            if not desc_tag:
+                # Try alternative selector
+                desc_tag = listing.find("p", class_=lambda c: c and "ooa-1e4spvk" in c)
+            
             full_desc = desc_tag.get_text(strip=True) if desc_tag else ""
             parts = [part.strip() for part in full_desc.split("•") if part.strip()]
 
@@ -401,7 +406,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
             mileage_tag = listing.find("dd", {"data-parameter": "mileage"})
             mileage_text = mileage_tag.get_text(strip=True) if mileage_tag else ""
             mileage_clean = int(re.sub(r'\D', '', mileage_text)) if mileage_text and re.search(r'\d',
-                                                                                               mileage_text) else 0
+                                                                                              mileage_text) else 0
 
             # Extract fuel type
             fuel_tag = listing.find("dd", {"data-parameter": "fuel_type"})
@@ -411,6 +416,10 @@ def extract_cars_from_html(html: str) -> List[Car]:
 
             # Extract price
             price_tag = listing.find("h3", attrs={"data-sentry-element": "Price"})
+            if not price_tag:
+                # Try alternative selector
+                price_tag = listing.find("p", attrs={"data-testid": "ad-price"})
+            
             if price_tag:
                 raw_price = price_tag.get_text(strip=True)
                 try:
@@ -422,13 +431,16 @@ def extract_cars_from_html(html: str) -> List[Car]:
 
             # Extract location
             location_tag = listing.find("p", class_="ooa-oj1jk2")
+            if not location_tag:
+                location_tag = listing.find("p", attrs={"data-testid": "location-date"})
+            
             location_str = location_tag.get_text(strip=True) if location_tag else ""
             city, voivodship = parse_location(location_str)
 
             # Extract seller type
             seller_elem = listing.find("article", class_=lambda c: c and "ooa-12g3tpj" in c)
             seller_text = seller_elem.get_text(strip=True) if seller_elem else "Unknown"
-            seller_type = "Prywatny sprzedawca" if seller_text.lower() == "prywatny sprzedawca" else "Firma"
+            seller_type = "Prywatny sprzedawca" if "prywatny" in seller_text.lower() else "Firma"
 
             # Generate other values
             scrape_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -457,8 +469,6 @@ def extract_cars_from_html(html: str) -> List[Car]:
             cars.append(car)
         except Exception as e:
             logging.error(f"Error parsing listing: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
             
     return cars
 
@@ -485,8 +495,6 @@ def write_to_csv(cars: List[Car]) -> None:
         logging.info(f"Data saved to file {csv_path} with {len(cars)} unique listings.")
     except Exception as e:
         logging.error(f"Error writing CSV: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
 
 # ---------------------------
 # Main Scraper Function
@@ -575,7 +583,7 @@ def run_scraper():
             logging.info(f"After page {current_page}:")
             logging.info(f"- Total processed and collected: {processed_counter}")
             
-            # Sleep to avoid overloading the server
+            # Small delay to avoid overloading the server
             time.sleep(2)
 
     except Exception as e:
