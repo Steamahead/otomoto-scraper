@@ -572,7 +572,6 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 # If no separator worked, use the whole string as one part
                 parts = [full_desc] if full_desc else []
 
-          # Keep your existing engine capacity extraction code
             # Extract engine capacity with improved logic
             engine_capacity_clean = 0
             if parts:
@@ -596,9 +595,6 @@ def extract_cars_from_html(html: str) -> List[Car]:
                     if 500 <= int(joined_digits) <= 9999:
                         engine_capacity_clean = int(joined_digits)
             
-            # ADD THIS LINE to override with our domain-specific knowledge
-            engine_capacity_clean = determine_engine_capacity(full_name, full_desc, fuel_type)
-
             # Extract engine power
             engine_power = ""
             if len(parts) >= 2:
@@ -717,6 +713,9 @@ def extract_cars_from_html(html: str) -> List[Car]:
                     fuel_type = "Diesel"
                 else:
                     fuel_type = "Benzyna"  # Default to gasoline
+            
+            # NOW that we have fuel_type defined, we can call determine_engine_capacity
+            engine_capacity_clean = determine_engine_capacity(full_name, full_desc, fuel_type)
             
             # Enhanced price extraction
             price_pln = 0
