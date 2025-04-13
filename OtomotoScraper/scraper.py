@@ -4,13 +4,14 @@ import time
 import re
 import hashlib
 import logging
-import requests
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import List, Tuple, Set, Dict
 
 from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 import tempfile
 
 # ---------------------------
@@ -19,7 +20,7 @@ import tempfile
 BASE_URL = ("https://www.otomoto.pl/osobowe/ds-automobiles/ds-7-crossback?"
             "search[advanced_search_expanded]=true")
 EXPECTED_PER_PAGE = 32
-MAX_PAGES_TO_CHECK = 30  # Increased to ensure we get all pages
+MAX_PAGES_TO_CHECK = 20
 DEBUG_MODE = True
 
 # Process only auctions whose normalized URL begins with this prefix.
@@ -285,33 +286,62 @@ def determine_engine_capacity(full_name, full_desc, fuel_type):
             return 1997  # 2.0L Diesel
         else:  # Lower power is usually 1.5 diesel
             return 1499  # 1.5L Diesel
-# ---------------------------
-# Web Scraping Functions
-# ---------------------------
-def get_page_html(url: str) -> str:
-    """Get page HTML using requests instead of Selenium"""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36',
-        'Accept-Language': 'pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Referer': 'https://www.otomoto.pl/'
-    }
-    
-    # Add retry capability
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            return response.text
-        except Exception as e:
-            logging.error(f"Error fetching URL {url} (attempt {attempt+1}/{max_retries}): {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(2)  # Wait a bit before retrying
-    return ""
+            
+    # Default to most common engine if nothing found
+    return 1997  # Default to 2.0 BlueHDi
 
-def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
+# ---------------------------
+# Selenium Setup Functions
+# ---------------------------
+def setup_driver(headless: bool = True) -> webdriver.Chrome:
+    chrome_options = Options()
+    if headless:
+        chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36")
+
+    # Create a unique temporary directory for Chrome's user data
+    unique_user_data_dir = tempfile.mkdtemp(prefix=f"chrome_user_data_{int(time.time() * 1000)}_")
+    logging.info(f"[DEBUG] Using unique user data directory: {unique_user_data_dir}")
+    chrome_options.add_argument(f"--user-data-dir={unique_user_data_dir}")
+
+    driver = webdriver.Chrome(options=chrome_options)
+    driver.implicitly_wait(10)
+    return driver
+
+def scroll_page(driver, max_scrolls: int = 10, wait: float = 2.0) -> None:
+    """Scroll the page to ensure all lazy-loaded elements are visible"""
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    for i in range(max_scrolls):
+        driver.execute_script("window.scrollBy(0, 500);")
+        time.sleep(wait)
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            logging.info(f"Scrolling stabilized after {i + 1} scrolls.")
+            break
+        last_height = new_height
+
+def save_page_html(driver, page_num):
+    """Save page HTML for debugging purposes"""
+    if DEBUG_MODE:
+        html = driver.page_source
+        try:
+            with open(f"debug_page_{page_num}.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            debug_print(f"Saved debug_page_{page_num}.html for inspection")
+        except Exception as e:
+            logging.error(f"Could not save HTML: {e}")
+            # In environments where file writing is not allowed, just log a snippet
+            logging.info(f"HTML snippet for page {page_num}: {html[:500]}...")
+
+def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
+    """Determine the total number of car listings and pages"""
     try:
+        html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
         total_auctions = 0
         total_pages = 1
@@ -367,6 +397,9 @@ def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
         logging.error(f"Error getting auction counts: {e}")
         return 320, 10
 
+# ---------------------------
+# Extraction and Parsing Functions
+# ---------------------------
 def find_container(soup):
     """Find the search results container with multiple fallback strategies"""
     # Strategy 1: Look for data-testid attribute
@@ -425,7 +458,155 @@ def find_listings(container):
     
     return []
 
+def write_to_csv(cars: List[Car]) -> None:
+    """Write extracted car data to a CSV file in a temporary directory"""
+    try:
+        # Get the system temporary directory
+        temp_dir = tempfile.gettempdir()
+        # Define a path for your CSV file in that directory
+        csv_path = os.path.join(temp_dir, "cars.csv")
+
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            fieldnames = [
+                "auction_id", "link", "full_name", "description", "year",
+                "mileage_km", "engine_capacity", "engine_power", "fuel_type",
+                "seller_type", "city", "voivodship", "scrape_date", "listing_status", "version"
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for car in cars:
+                car_dict = asdict(car)
+                car_dict.pop("price_pln", None)
+                car_dict.pop("data_id", None)  # Don't include this in the CSV
+                writer.writerow(car_dict)
+        logging.info(f"Data saved to file {csv_path} with {len(cars)} unique listings.")
+    except Exception as e:
+        logging.error(f"Error writing CSV: {e}")
+
+
+# ---------------------------
+# Main Scraper Function
+# ---------------------------
+def run_scraper():
+    """Main function to run the scraper"""
+    logging.info(f"[DEBUG] run_scraper starting at {datetime.now()}")
+    driver = None
+    all_cars: List[Car] = []
+    auction_counter = 0
+    processed_counter = 0
+
+    try:
+        driver = setup_driver(headless=True)  # Set to True for production, False for debugging
+        driver.get(BASE_URL)
+        time.sleep(5)  # Wait for page to load
+        
+        # Get total auctions and pages
+        total_auctions, total_pages = get_total_auction_count_and_pages(driver)
+        logging.info(f"Total auctions found on the site: {total_auctions}")
+        logging.info(f"Estimated total pages: {total_pages}")
+        
+        # Save first page HTML for debugging
+        save_page_html(driver, 1)
+        
+        # Determine how many pages to check
+        pages_to_check = min(total_pages, MAX_PAGES_TO_CHECK)
+        
+        for current_page in range(1, pages_to_check + 1):
+            page_url = BASE_URL if current_page == 1 else f"{BASE_URL}&page={current_page}"
+            logging.info(f"\nFetching page {current_page} of {pages_to_check}: {page_url}")
+            
+            if current_page > 1:  # Only need to navigate for pages after the first
+                driver.get(page_url)
+                time.sleep(5)  # Wait for page to load
+            
+            # Scroll to ensure all content is loaded
+            scroll_page(driver, max_scrolls=10, wait=1.0)
+            
+            # Save page HTML for debugging
+            save_page_html(driver, current_page)
+            
+            # Get the page source and extract car listings
+            html = driver.page_source
+            cars_on_page = extract_cars_from_html(html)
+
+            if not cars_on_page:
+                logging.info(f"No auctions found on page {current_page}. Stopping.")
+                break
+
+            logging.info(f"Found {len(cars_on_page)} cars on page {current_page}")
+
+            for car in cars_on_page:
+                processed_counter += 1
+                
+                # Generate auction ID
+                auction_counter += 1
+                mileage_digits = str(car.mileage_km)
+                car.auction_id = f"{auction_counter}_{mileage_digits}_{car.price_pln}"
+
+                # Insert the car into the database
+                try:
+                    db_id = insert_into_db(car)
+                    if db_id:
+                        logging.info(f"Database insertion successful, ID: {db_id}")
+                    else:
+                        logging.error("Database insertion failed")
+                except Exception as e:
+                    logging.error(f"Error during database insertion: {e}")
+
+                # Add to the list of all cars (for CSV backup)
+                all_cars.append(car)
+
+            logging.info(f"After page {current_page}:")
+            logging.info(f"- Total processed and collected: {processed_counter}")
+
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+    finally:
+        if driver:
+            driver.quit()
+            logging.info("ChromeDriver closed successfully.")
+
+    logging.info(f"[DEBUG] run_scraper ended at {datetime.now()}")
+    logging.info("\n=== FINAL RESULTS ===")
+    logging.info(f"Total auctions processed and collected: {processed_counter}")
+    
+    # Write results to CSV as a backup
+    write_to_csv(all_cars)
+    
+    # Summary of what was found
+    logging.info(f"Auctions by year:")
+    years = {}
+    for car in all_cars:
+        if car.year in years:
+            years[car.year] += 1
+        else:
+            years[car.year] = 1
+    
+    for year, count in sorted(years.items()):
+        logging.info(f" - {year}: {count} cars")
+
+
+# ---------------------------
+# Entry Point
+# ---------------------------
+if __name__ == "__main__":
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.StreamHandler()
+        ]
+    )
+    
+    # Run the scraper
+    run_scraper()
+
+
 def extract_cars_from_html(html: str) -> List[Car]:
+    """Extract car listings from HTML content"""
     cars: List[Car] = []
     soup = BeautifulSoup(html, "html.parser")
     
@@ -572,35 +753,12 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 # If no separator worked, use the whole string as one part
                 parts = [full_desc] if full_desc else []
 
-            # Extract engine capacity with improved logic
-            engine_capacity_clean = 0
-            if parts:
-                # Look for cubic capacity patterns in all parts
-                for part in parts:
-                    if any(pattern in part.lower() for pattern in ["cm3", "cm³", "ccm", "pojemność"]):
-                        digits = re.findall(r'\d+', part)
-                        if digits:
-                            # Join digits if there are spaces (e.g., "1 997" should become "1997")
-                            joined_digits = ''.join(digits)
-                            if 500 <= int(joined_digits) <= 9999:  # Realistic engine size
-                                engine_capacity_clean = int(joined_digits)
-                                break
-            
-            if engine_capacity_clean == 0 and parts:
-                # Try first part as a fallback if it contains digits
-                engine_capacity_text = parts[0]
-                digits = re.findall(r'\d+', engine_capacity_text)
-                if digits:
-                    joined_digits = ''.join(digits)
-                    if 500 <= int(joined_digits) <= 9999:
-                        engine_capacity_clean = int(joined_digits)
-            
             # Extract engine power
             engine_power = ""
             if len(parts) >= 2:
                 # Look for power patterns
                 for part in parts:
-                    if any(pattern in part.lower() for pattern in ["km", "kw", "hp", "ps", "cv"]):
+                    if any(pattern in part.lower() for term in ["km", "kw", "hp", "ps", "cv"]):
                         engine_power = part.strip()
                         break
                 
@@ -857,143 +1015,3 @@ def extract_cars_from_html(html: str) -> List[Car]:
             logging.error(traceback.format_exc())
             
     return cars
-
-def write_to_csv(cars: List[Car]) -> None:
-    try:
-        # Get the system temporary directory
-        temp_dir = tempfile.gettempdir()
-        # Define a path for your CSV file in that directory
-        csv_path = os.path.join(temp_dir, "cars.csv")
-
-        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-            fieldnames = [
-                "auction_id", "link", "full_name", "description", "year",
-                "mileage_km", "engine_capacity", "engine_power", "fuel_type",
-                "seller_type", "city", "voivodship", "scrape_date", "listing_status", "version"
-            ]
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for car in cars:
-                car_dict = asdict(car)
-                car_dict.pop("price_pln", None)
-                car_dict.pop("data_id", None)  # Don't include this in the CSV
-                writer.writerow(car_dict)
-        logging.info(f"Data saved to file {csv_path} with {len(cars)} unique listings.")
-    except Exception as e:
-        logging.error(f"Error writing CSV: {e}")
-
-# ---------------------------
-# Main Scraper Function
-# ---------------------------
-def run_scraper():
-    logging.info(f"[DEBUG] run_scraper starting at {datetime.now()}")
-    all_cars: List[Car] = []
-    auction_counter = 0
-    processed_counter = 0
-
-    try:
-        # Get the main page
-        html = get_page_html(BASE_URL)
-        if not html:
-            logging.error("Failed to fetch the main page")
-            return
-            
-        # Get total auctions and pages
-        total_auctions, total_pages = get_total_auction_count_and_pages(html)
-        logging.info(f"Total auctions found on the site: {total_auctions}")
-        logging.info(f"Estimated total pages: {total_pages}")
-        
-        # Process the first page HTML we already have
-        cars_on_page = extract_cars_from_html(html)
-        if cars_on_page:
-            for car in cars_on_page:
-                processed_counter += 1
-                auction_counter += 1
-                mileage_digits = str(car.mileage_km)
-                car.auction_id = f"{auction_counter}_{mileage_digits}_{car.price_pln}"
-                
-                # Insert into DB
-                try:
-                    db_id = insert_into_db(car)
-                    if db_id:
-                        logging.info(f"Database insertion successful, ID: {db_id}")
-                    else:
-                        logging.error("Database insertion failed")
-                except Exception as e:
-                    logging.error(f"Error during database insertion: {e}")
-                
-                all_cars.append(car)
-        
-        # Determine how many pages to check
-        pages_to_check = min(total_pages, MAX_PAGES_TO_CHECK)
-        
-        # Now process remaining pages
-        for current_page in range(2, pages_to_check + 1):
-            page_url = f"{BASE_URL}&page={current_page}"
-            logging.info(f"\nFetching page {current_page} of {pages_to_check}: {page_url}")
-            
-            html = get_page_html(page_url)
-            if not html:
-                logging.error(f"Failed to fetch page {current_page}")
-                continue
-                
-            cars_on_page = extract_cars_from_html(html)
-
-            if not cars_on_page:
-                logging.info(f"No auctions found on page {current_page}. Stopping.")
-                break
-
-            logging.info(f"Found {len(cars_on_page)} cars on page {current_page}")
-
-            for car in cars_on_page:
-                processed_counter += 1
-                
-                # Generate auction ID
-                auction_counter += 1
-                mileage_digits = str(car.mileage_km)
-                car.auction_id = f"{auction_counter}_{mileage_digits}_{car.price_pln}"
-
-                # Insert the car into the database
-                try:
-                    db_id = insert_into_db(car)
-                    if db_id:
-                        logging.info(f"Database insertion successful, ID: {db_id}")
-                    else:
-                        logging.info("Database insertion failed")
-                except Exception as e:
-                    logging.error(f"Error during database insertion: {e}")
-
-                # Add to the list of all cars (for CSV backup)
-                all_cars.append(car)
-
-            logging.info(f"After page {current_page}:")
-            logging.info(f"- Total processed and collected: {processed_counter}")
-            
-            # Small delay to avoid overloading the server
-            time.sleep(2)
-
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-
-    logging.info(f"[DEBUG] run_scraper ended at {datetime.now()}")
-    logging.info("\n=== FINAL RESULTS ===")
-    logging.info(f"Total auctions processed and collected: {processed_counter}")
-    write_to_csv(all_cars)
-    
-    # Summary of what was found
-    logging.info(f"Auctions by year:")
-    years = {}
-    for car in all_cars:
-        if car.year in years:
-            years[car.year] += 1
-        else:
-            years[car.year] = 1
-    
-    for year, count in sorted(years.items()):
-        logging.info(f" - {year}: {count} cars")
-
-
-if __name__ == "__main__":
-    run_scraper()
