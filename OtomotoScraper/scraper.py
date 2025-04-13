@@ -11,6 +11,7 @@ from typing import List, Tuple, Set, Dict
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+# We'll import pymssql dynamically inside get_sql_connection
 import tempfile
 
 # ---------------------------
@@ -100,12 +101,17 @@ def get_sql_connection():
         print(traceback.format_exc())
         return None
 
+
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
     return hashlib.md5(url.encode('utf-8')).hexdigest()
 
+
 def get_auction_number(auction_key: str) -> int:
-    """Checks if an AuctionNumber already exists for the given AuctionKey."""
+    """
+    Checks if an AuctionNumber already exists for the given AuctionKey.
+    If it does, returns that number; if not, returns the next sequential number.
+    """
     print(f"Getting auction number for key: {auction_key}")
     connection = None
     
@@ -146,6 +152,7 @@ def get_auction_number(auction_key: str) -> int:
                 print("Connection closed in get_auction_number")
             except Exception as close_error:
                 print(f"Error closing connection: {str(close_error)}")
+
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
@@ -217,6 +224,7 @@ def insert_into_db(car: Car) -> int:
                 print("Connection closed in insert_into_db")
             except Exception as close_error:
                 print(f"Error closing connection: {str(close_error)}")
+
 
 # ---------------------------
 # Utility Functions
