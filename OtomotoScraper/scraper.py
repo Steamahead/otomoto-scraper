@@ -3,15 +3,13 @@ import csv
 import time
 import re
 import hashlib
+import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import List, Tuple, Set, Dict
 
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-# We'll import pymssql dynamically inside get_sql_connection
+# We'll import the specific modules as needed
 import tempfile
 
 # ---------------------------
@@ -81,7 +79,7 @@ def get_sql_connection():
         username = os.environ.get('DB_UID')
         password = os.environ.get('DB_PWD')
         
-        print(f"Connecting to SQL server with SQL auth: {server}/{database} as {username}")
+        logging.info(f"Connecting to SQL server with SQL auth: {server}/{database} as {username}")
         
         # Connect using pymssql with SQL authentication
         connection = pymssql.connect(
@@ -93,12 +91,12 @@ def get_sql_connection():
             appname="AzureFunctionsApp"
         )
         
-        print("SQL connection successful with SQL auth")
+        logging.info("SQL connection successful with SQL auth")
         return connection
     except Exception as e:
-        print(f"SQL connection error: {str(e)}")
+        logging.error(f"SQL connection error: {str(e)}")
         import traceback
-        print(traceback.format_exc())
+        logging.error(traceback.format_exc())
         return None
 
 
@@ -112,13 +110,13 @@ def get_auction_number(auction_key: str) -> int:
     Checks if an AuctionNumber already exists for the given AuctionKey.
     If it does, returns that number; if not, returns the next sequential number.
     """
-    print(f"Getting auction number for key: {auction_key}")
+    logging.info(f"Getting auction number for key: {auction_key}")
     connection = None
     
     try:
         connection = get_sql_connection()
         if not connection:
-            print("Failed to establish database connection")
+            logging.error("Failed to establish database connection")
             return 1000000  # Default value
             
         cursor = connection.cursor()
@@ -130,40 +128,40 @@ def get_auction_number(auction_key: str) -> int:
         
         if row:
             auction_number = row[0]
-            print(f"Found existing auction number: {auction_number}")
+            logging.info(f"Found existing auction number: {auction_number}")
         else:
             # Get max auction number
             max_query = "SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings"
             cursor.execute(max_query)
             max_val = cursor.fetchone()[0]
             auction_number = int(max_val) + 1 
-            print(f"Created new auction number: {auction_number}")
+            logging.info(f"Created new auction number: {auction_number}")
 
         return auction_number
     except Exception as e:
-        print(f"Error in get_auction_number: {str(e)}")
+        logging.error(f"Error in get_auction_number: {str(e)}")
         import traceback
-        print(traceback.format_exc())
+        logging.error(traceback.format_exc())
         return 1000000  # Default value
     finally:
         if connection:
             try:
                 connection.close()
-                print("Connection closed in get_auction_number")
+                logging.debug("Connection closed in get_auction_number")
             except Exception as close_error:
-                print(f"Error closing connection: {str(close_error)}")
+                logging.warning(f"Error closing connection: {str(close_error)}")
 
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
-    print(f"Inserting into database: {car.full_name[:30]}")
+    logging.info(f"Inserting into database: {car.full_name[:30]}")
     connection = None
     cursor = None
     
     try:
         connection = get_sql_connection()
         if not connection:
-            print(f"Failed to establish database connection for car: {car.full_name}")
+            logging.error(f"Failed to establish database connection for car: {car.full_name}")
             return None
             
         cursor = connection.cursor()
@@ -203,17 +201,17 @@ def insert_into_db(car: Car) -> int:
             cursor.execute(insert_query, params)
             listing_id = cursor.fetchone()[0]
             connection.commit()
-            print(f"Successfully inserted car: {car.full_name} with ID: {listing_id}")
+            logging.info(f"Successfully inserted car: {car.full_name} with ID: {listing_id}")
             return listing_id
         except Exception as e:
             if connection:
                 connection.rollback()
-            print(f"Error inserting car {car.full_name}: {str(e)}")
+            logging.error(f"Error inserting car {car.full_name}: {str(e)}")
             import traceback
-            print(traceback.format_exc())
+            logging.error(traceback.format_exc())
             return None
     except Exception as e:
-        print(f"Database connection error: {str(e)}")
+        logging.error(f"Database connection error: {str(e)}")
         return None
     finally:
         if cursor:
@@ -221,10 +219,11 @@ def insert_into_db(car: Car) -> int:
         if connection:
             try:
                 connection.close()
-                print("Connection closed in insert_into_db")
+                logging.debug("Connection closed in insert_into_db")
             except Exception as close_error:
-                print(f"Error closing connection: {str(close_error)}")
+                logging.warning(f"Error closing connection: {str(close_error)}")
 
+# Add the rest of your existing code here, unchanged
 
 # ---------------------------
 # Utility Functions
