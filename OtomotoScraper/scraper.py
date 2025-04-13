@@ -3,7 +3,6 @@ import csv
 import time
 import re
 import hashlib
-import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -24,8 +23,7 @@ MAX_PAGES_TO_CHECK = 20
 DEBUG_MODE = True
 
 # Process only auctions whose normalized URL begins with this prefix.
-# Made more flexible by using shorter prefix
-REQUIRED_PREFIX = "https://www.otomoto.pl/osobowe/oferta/ds-automobiles-ds-7"
+REQUIRED_PREFIX = "https://www.otomoto.pl/osobowe/oferta/ds-automobiles-ds-7-crossback"
 
 # Updated candidate DS version names.
 CANDIDATE_VERSIONS = [
@@ -42,6 +40,7 @@ CANDIDATE_VERSIONS = [
     "Etoile",
     "La Premiere"
 ]
+
 
 @dataclass
 class Car:
@@ -69,7 +68,6 @@ class Car:
 # ---------------------------
 def get_sql_connection():
     """Get SQL connection using SQL authentication only"""
-    import logging
     import os
     
     try:
@@ -82,7 +80,7 @@ def get_sql_connection():
         username = os.environ.get('DB_UID')
         password = os.environ.get('DB_PWD')
         
-        logging.info(f"Connecting to SQL server with SQL auth: {server}/{database} as {username}")
+        print(f"Connecting to SQL server with SQL auth: {server}/{database} as {username}")
         
         # Connect using pymssql with SQL authentication
         connection = pymssql.connect(
@@ -94,12 +92,12 @@ def get_sql_connection():
             appname="AzureFunctionsApp"
         )
         
-        logging.info("SQL connection successful with SQL auth")
+        print("SQL connection successful with SQL auth")
         return connection
     except Exception as e:
-        logging.error(f"SQL connection error: {str(e)}")
+        print(f"SQL connection error: {str(e)}")
         import traceback
-        logging.error(traceback.format_exc())
+        print(traceback.format_exc())
         return None
 
 def compute_auction_key(url: str) -> str:
@@ -108,13 +106,13 @@ def compute_auction_key(url: str) -> str:
 
 def get_auction_number(auction_key: str) -> int:
     """Checks if an AuctionNumber already exists for the given AuctionKey."""
-    logging.info(f"Getting auction number for key: {auction_key}")
+    print(f"Getting auction number for key: {auction_key}")
     connection = None
     
     try:
         connection = get_sql_connection()
         if not connection:
-            logging.error("Failed to establish database connection")
+            print("Failed to establish database connection")
             return 1000000  # Default value
             
         cursor = connection.cursor()
@@ -126,39 +124,39 @@ def get_auction_number(auction_key: str) -> int:
         
         if row:
             auction_number = row[0]
-            logging.info(f"Found existing auction number: {auction_number}")
+            print(f"Found existing auction number: {auction_number}")
         else:
             # Get max auction number
             max_query = "SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings"
             cursor.execute(max_query)
             max_val = cursor.fetchone()[0]
             auction_number = int(max_val) + 1 
-            logging.info(f"Created new auction number: {auction_number}")
+            print(f"Created new auction number: {auction_number}")
 
         return auction_number
     except Exception as e:
-        logging.error(f"Error in get_auction_number: {str(e)}")
+        print(f"Error in get_auction_number: {str(e)}")
         import traceback
-        logging.error(traceback.format_exc())
+        print(traceback.format_exc())
         return 1000000  # Default value
     finally:
         if connection:
             try:
                 connection.close()
-                logging.debug("Connection closed in get_auction_number")
+                print("Connection closed in get_auction_number")
             except Exception as close_error:
-                logging.warning(f"Error closing connection: {str(close_error)}")
+                print(f"Error closing connection: {str(close_error)}")
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
-    logging.info(f"Inserting into database: {car.full_name[:30]}")
+    print(f"Inserting into database: {car.full_name[:30]}")
     connection = None
     cursor = None
     
     try:
         connection = get_sql_connection()
         if not connection:
-            logging.error(f"Failed to establish database connection for car: {car.full_name}")
+            print(f"Failed to establish database connection for car: {car.full_name}")
             return None
             
         cursor = connection.cursor()
@@ -198,17 +196,17 @@ def insert_into_db(car: Car) -> int:
             cursor.execute(insert_query, params)
             listing_id = cursor.fetchone()[0]
             connection.commit()
-            logging.info(f"Successfully inserted car: {car.full_name} with ID: {listing_id}")
+            print(f"Successfully inserted car: {car.full_name} with ID: {listing_id}")
             return listing_id
         except Exception as e:
             if connection:
                 connection.rollback()
-            logging.error(f"Error inserting car {car.full_name}: {str(e)}")
+            print(f"Error inserting car {car.full_name}: {str(e)}")
             import traceback
-            logging.error(traceback.format_exc())
+            print(traceback.format_exc())
             return None
     except Exception as e:
-        logging.error(f"Database connection error: {str(e)}")
+        print(f"Database connection error: {str(e)}")
         return None
     finally:
         if cursor:
@@ -216,16 +214,17 @@ def insert_into_db(car: Car) -> int:
         if connection:
             try:
                 connection.close()
-                logging.debug("Connection closed in insert_into_db")
+                print("Connection closed in insert_into_db")
             except Exception as close_error:
-                logging.warning(f"Error closing connection: {str(close_error)}")
+                print(f"Error closing connection: {str(close_error)}")
 
 # ---------------------------
 # Utility Functions
 # ---------------------------
 def debug_print(message):
     if DEBUG_MODE:
-        logging.info(f"[DEBUG] {message}")
+        print(f"[DEBUG] {message}")
+
 
 def basic_url_cleanup(url: str) -> str:
     """Very basic URL cleanup - just handle relative URLs"""
@@ -237,6 +236,7 @@ def basic_url_cleanup(url: str) -> str:
 
     return url
 
+
 def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
     candidate = candidate.lower()
     text = text.lower()
@@ -247,53 +247,22 @@ def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
             return True
     return False
 
+
 def extract_version(full_name: str, description: str) -> str:
     for cand in CANDIDATE_VERSIONS:
         if fuzzy_contains(cand, full_name, 0.9) or fuzzy_contains(cand, description, 0.9):
             return cand
     return ""
 
+
 def parse_location(location_str: str) -> Tuple[str, str]:
     if "(" in location_str and location_str.endswith(")"):
         city, voivodship = location_str.split("(", 1)
         return city.strip(), voivodship.rstrip(")").strip()
     return location_str.strip(), ""
-            
-def determine_engine_capacity(full_name, full_desc, fuel_type):
-    """
-    Determine engine capacity based on DS7 Crossback specific patterns.
-    Only 3 possible values: 1598cc (1.6L), 1997cc (2.0L), or 1499cc (1.5L)
-    """
-    combined_text = (full_name + " " + full_desc).lower()
-    
-    # Method 1: Check for specific engine designations
-    if any(term in combined_text for term in ["1.6", "1,6", "e-tense", "etense", "phev", "hybrid", "plug-in", "hybryda"]):
-        return 1598  # 1.6L for hybrids and PureTech
-    
-    if any(term in combined_text for term in ["2.0", "2,0", "180", "hdi 180", "bluehdi 180"]):
-        return 1997  # 2.0L BlueHDi
-    
-    if any(term in combined_text for term in ["1.5", "1,5", "130", "hdi 130", "bluehdi 130"]):
-        return 1499  # 1.5L BlueHDi
-    
-    # Method 2: Check for power ratings that indicate specific engines
-    power_matches = re.findall(r'(\d+)\s*(?:km|hp|ps|cv|ch)', combined_text, re.IGNORECASE)
-    if power_matches:
-        power = int(power_matches[0])
-        if power >= 200:  # High power is always the hybrid
-            return 1598  # 1.6L Hybrid
-        elif power >= 150:  # Mid power is usually 2.0 diesel
-            return 1997  # 2.0L Diesel
-        else:  # Lower power is usually 1.5 diesel
-            return 1499  # 1.5L Diesel
-            
-    # Default to most common engine if nothing found
-    return 1997  # Default to 2.0 BlueHDi
 
-# ---------------------------
-# Selenium Setup Functions
-# ---------------------------
-def setup_driver(headless: bool = True) -> webdriver.Chrome:
+
+def setup_driver(headless: bool = False) -> webdriver.Chrome:
     chrome_options = Options()
     if headless:
         chrome_options.add_argument("--headless")
@@ -306,47 +275,32 @@ def setup_driver(headless: bool = True) -> webdriver.Chrome:
 
     # Create a unique temporary directory for Chrome's user data
     unique_user_data_dir = tempfile.mkdtemp(prefix=f"chrome_user_data_{int(time.time() * 1000)}_")
-    logging.info(f"[DEBUG] Using unique user data directory: {unique_user_data_dir}")
+    print(f"[DEBUG] Using unique user data directory: {unique_user_data_dir}")
     chrome_options.add_argument(f"--user-data-dir={unique_user_data_dir}")
 
     driver = webdriver.Chrome(options=chrome_options)
     driver.implicitly_wait(10)
     return driver
 
+
 def scroll_page(driver, max_scrolls: int = 10, wait: float = 2.0) -> None:
-    """Scroll the page to ensure all lazy-loaded elements are visible"""
     last_height = driver.execute_script("return document.body.scrollHeight")
     for i in range(max_scrolls):
         driver.execute_script("window.scrollBy(0, 500);")
         time.sleep(wait)
         new_height = driver.execute_script("return document.body.scrollHeight")
         if new_height == last_height:
-            logging.info(f"Scrolling stabilized after {i + 1} scrolls.")
+            print(f"Scrolling stabilized after {i + 1} scrolls.")
             break
         last_height = new_height
 
-def save_page_html(driver, page_num):
-    """Save page HTML for debugging purposes"""
-    if DEBUG_MODE:
-        html = driver.page_source
-        try:
-            with open(f"debug_page_{page_num}.html", "w", encoding="utf-8") as f:
-                f.write(html)
-            debug_print(f"Saved debug_page_{page_num}.html for inspection")
-        except Exception as e:
-            logging.error(f"Could not save HTML: {e}")
-            # In environments where file writing is not allowed, just log a snippet
-            logging.info(f"HTML snippet for page {page_num}: {html[:500]}...")
 
 def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
-    """Determine the total number of car listings and pages"""
     try:
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
         total_auctions = 0
         total_pages = 1
-        
-        # Find total auctions from h1 text
         h1_tag = soup.find("h1")
         if h1_tag:
             h1_text = h1_tag.get_text()
@@ -354,8 +308,6 @@ def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
             if match:
                 total_auctions = int(match.group(1))
                 debug_print(f"Found total auctions from h1: {total_auctions}")
-        
-        # Find total auctions from text if not found in h1
         if total_auctions == 0:
             texts_with_counts = soup.find_all(string=re.compile(r'\d+\s+ogłosz'))
             for text in texts_with_counts:
@@ -364,8 +316,6 @@ def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
                     total_auctions = int(match.group(1))
                     debug_print(f"Found total auctions from text: {total_auctions}")
                     break
-        
-        # Find pagination
         pagination = soup.find("ul", class_=lambda x: x and "pagination" in x)
         if pagination:
             page_numbers = [int(li.get_text(strip=True)) for li in pagination.find_all("li")
@@ -373,621 +323,120 @@ def get_total_auction_count_and_pages(driver) -> Tuple[int, int]:
             if page_numbers:
                 total_pages = max(page_numbers)
                 debug_print(f"Found total pages from pagination: {total_pages}")
-        
-        # Calculate total pages if not found
         if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
             total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
             debug_print(f"Estimated total pages from auction count: {total_pages}")
-        
-        # Calculate total auctions if not found
         if total_auctions == 0 and total_pages > 1:
             total_auctions = total_pages * EXPECTED_PER_PAGE
             debug_print(f"Estimated total auctions from page count: {total_auctions}")
-        
-        # Use defaults if nothing found
         if total_auctions == 0:
             total_auctions = 320
             debug_print(f"Using default auction count: {total_auctions}")
         if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
             total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
             debug_print(f"Using calculated page count: {total_pages}")
-            
         return total_auctions, total_pages
     except Exception as e:
-        logging.error(f"Error getting auction counts: {e}")
+        print(f"Error getting auction counts: {e}")
         return 320, 10
 
-# ---------------------------
-# Extraction and Parsing Functions
-# ---------------------------
-def find_container(soup):
-    """Find the search results container with multiple fallback strategies"""
-    # Strategy 1: Look for data-testid attribute
-    container = soup.find("div", {"data-testid": "search-results"})
-    if container:
-        return container
-    
-    # Strategy 2: Look for specific class
-    container = soup.find("div", class_=lambda c: c and "ooa-1e1uucc" in c)
-    if container:
-        return container
 
-    # Strategy 3: Look for special classes
-    for class_pattern in ["listings", "results", "search-results", "offers"]:
-        container = soup.find("div", class_=lambda c: c and class_pattern.lower() in c.lower())
-        if container:
-            return container
-    
-    # Strategy 4: Look for divs that contain article elements
-    for div in soup.find_all("div"):
-        if div.find_all("article") or div.find_all("div", class_=lambda c: c and "offer" in c.lower()):
-            return div
-    
-    return None
-
-def find_listings(container):
-    """Find all listings with multiple fallback strategies"""
-    if not container:
-        return []
-    
-    # Strategy 1: Articles with data-id
-    listings = container.find_all("article", attrs={"data-id": True})
-    if listings:
-        return listings
-    
-    # Strategy 2: Articles with any class
-    listings = container.find_all("article")
-    if listings:
-        return listings
-    
-    # Strategy 3: Divs with offer-related classes
-    offer_patterns = ["offer", "listing", "advert", "item", "result"]
-    for pattern in offer_patterns:
-        listings = container.find_all("div", class_=lambda c: c and pattern.lower() in c.lower())
-        if listings:
-            return listings
-    
-    # Strategy 4: Divs with links containing "oferta"
-    divs_with_links = []
-    for div in container.find_all("div"):
-        if div.find("a", href=lambda h: h and "oferta" in h):
-            divs_with_links.append(div)
-    
-    if divs_with_links:
-        return divs_with_links
-    
-    return []
-
-def write_to_csv(cars: List[Car]) -> None:
-    """Write extracted car data to a CSV file in a temporary directory"""
-    try:
-        # Get the system temporary directory
-        temp_dir = tempfile.gettempdir()
-        # Define a path for your CSV file in that directory
-        csv_path = os.path.join(temp_dir, "cars.csv")
-
-        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
-            fieldnames = [
-                "auction_id", "link", "full_name", "description", "year",
-                "mileage_km", "engine_capacity", "engine_power", "fuel_type",
-                "seller_type", "city", "voivodship", "scrape_date", "listing_status", "version"
-            ]
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for car in cars:
-                car_dict = asdict(car)
-                car_dict.pop("price_pln", None)
-                car_dict.pop("data_id", None)  # Don't include this in the CSV
-                writer.writerow(car_dict)
-        logging.info(f"Data saved to file {csv_path} with {len(cars)} unique listings.")
-    except Exception as e:
-        logging.error(f"Error writing CSV: {e}")
-
-
-# ---------------------------
-# Main Scraper Function
-# ---------------------------
-def run_scraper():
-    """Main function to run the scraper"""
-    logging.info(f"[DEBUG] run_scraper starting at {datetime.now()}")
-    driver = None
-    all_cars: List[Car] = []
-    auction_counter = 0
-    processed_counter = 0
-
-    try:
-        driver = setup_driver(headless=True)  # Set to True for production, False for debugging
-        driver.get(BASE_URL)
-        time.sleep(5)  # Wait for page to load
-        
-        # Get total auctions and pages
-        total_auctions, total_pages = get_total_auction_count_and_pages(driver)
-        logging.info(f"Total auctions found on the site: {total_auctions}")
-        logging.info(f"Estimated total pages: {total_pages}")
-        
-        # Save first page HTML for debugging
-        save_page_html(driver, 1)
-        
-        # Determine how many pages to check
-        pages_to_check = min(total_pages, MAX_PAGES_TO_CHECK)
-        
-        for current_page in range(1, pages_to_check + 1):
-            page_url = BASE_URL if current_page == 1 else f"{BASE_URL}&page={current_page}"
-            logging.info(f"\nFetching page {current_page} of {pages_to_check}: {page_url}")
-            
-            if current_page > 1:  # Only need to navigate for pages after the first
-                driver.get(page_url)
-                time.sleep(5)  # Wait for page to load
-            
-            # Scroll to ensure all content is loaded
-            scroll_page(driver, max_scrolls=10, wait=1.0)
-            
-            # Save page HTML for debugging
-            save_page_html(driver, current_page)
-            
-            # Get the page source and extract car listings
-            html = driver.page_source
-            cars_on_page = extract_cars_from_html(html)
-
-            if not cars_on_page:
-                logging.info(f"No auctions found on page {current_page}. Stopping.")
-                break
-
-            logging.info(f"Found {len(cars_on_page)} cars on page {current_page}")
-
-            for car in cars_on_page:
-                processed_counter += 1
-                
-                # Generate auction ID
-                auction_counter += 1
-                mileage_digits = str(car.mileage_km)
-                car.auction_id = f"{auction_counter}_{mileage_digits}_{car.price_pln}"
-
-                # Insert the car into the database
-                try:
-                    db_id = insert_into_db(car)
-                    if db_id:
-                        logging.info(f"Database insertion successful, ID: {db_id}")
-                    else:
-                        logging.error("Database insertion failed")
-                except Exception as e:
-                    logging.error(f"Error during database insertion: {e}")
-
-                # Add to the list of all cars (for CSV backup)
-                all_cars.append(car)
-
-            logging.info(f"After page {current_page}:")
-            logging.info(f"- Total processed and collected: {processed_counter}")
-
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-    finally:
-        if driver:
-            driver.quit()
-            logging.info("ChromeDriver closed successfully.")
-
-    logging.info(f"[DEBUG] run_scraper ended at {datetime.now()}")
-    logging.info("\n=== FINAL RESULTS ===")
-    logging.info(f"Total auctions processed and collected: {processed_counter}")
-    
-    # Write results to CSV as a backup
-    write_to_csv(all_cars)
-    
-    # Summary of what was found
-    logging.info(f"Auctions by year:")
-    years = {}
-    for car in all_cars:
-        if car.year in years:
-            years[car.year] += 1
-        else:
-            years[car.year] = 1
-    
-    for year, count in sorted(years.items()):
-        logging.info(f" - {year}: {count} cars")
-
-
-# ---------------------------
-# Entry Point
-# ---------------------------
-if __name__ == "__main__":
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        handlers=[
-            logging.StreamHandler()
-        ]
-    )
-    
-    # Run the scraper
-    run_scraper()
+def save_page_html(driver, page_num):
+    if DEBUG_MODE:
+        html = driver.page_source
+        try:
+            with open(f"debug_page_{page_num}.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            debug_print(f"Saved debug_page_{page_num}.html for inspection")
+        except Exception as e:
+            print(f"Could not save HTML: {e}")
+            # In environments where file writing is not allowed, just log a snippet
+            print(f"HTML snippet for page {page_num}: {html[:500]}...")
 
 
 def extract_cars_from_html(html: str) -> List[Car]:
-    """Extract car listings from HTML content"""
     cars: List[Car] = []
     soup = BeautifulSoup(html, "html.parser")
-    
-    # Try to find the container with enhanced fallback strategies
-    container = find_container(soup)
-    
+    container = soup.find("div", {"data-testid": "search-results"})
     if not container:
-        logging.error("Search results container not found in HTML!")
+        print("Search results container not found in HTML!")
         return cars
 
-    # Find all listings with enhanced fallback strategies
-    listings = find_listings(container)
-    
-    if not listings:
-        logging.error("No listings found in the container!")
-        return cars
-    
-    logging.info(f"Found {len(listings)} potential listings to process")
-    
+    listings = container.find_all("article", attrs={"data-id": True})
     for listing in listings:
         try:
-            # Get the data-id attribute with fallback
+            # Get the data-id attribute
             data_id = listing.get("data-id", "")
-            if not data_id:
-                # Try to get any id or data attribute
-                for attr in listing.attrs:
-                    if "id" in attr.lower() or attr.startswith("data-"):
-                        data_id = listing.get(attr, "")
-                        break
-            
-            # Find a title element - try multiple approaches
-            h2_tag = None
-            for tag_type in ["h2", "h3", "div", "p"]:
-                # Try class-based selectors
-                for class_pattern in ["title", "name", "header"]:
-                    tags = listing.find_all(tag_type, class_=lambda c: c and class_pattern.lower() in c.lower())
-                    if tags:
-                        h2_tag = tags[0]
-                        break
-                
-                # Try data attribute selectors
-                if not h2_tag:
-                    h2_tag = listing.find(tag_type, attrs={"data-testid": "ad-title"})
-                
-                # Try any h2/h3
-                if not h2_tag and tag_type in ["h2", "h3"]:
-                    h2_tag = listing.find(tag_type)
-                
-                if h2_tag:
-                    break
-            
-            # If still no title element, look for any prominent text
+
+            h2_tag = listing.find("h2", class_=lambda c: c and "ooa-1jjzghu" in c)
             if not h2_tag:
-                large_text_elements = listing.find_all(class_=lambda c: c and any(size in c.lower() for size in ["large", "big", "title", "head"]))
-                if large_text_elements:
-                    h2_tag = large_text_elements[0]
-            
-            # Find the link - either in the title or elsewhere
-            a_tag = None
-            if h2_tag:
-                a_tag = h2_tag.find("a", href=True)
-            
-            # If no link in title, look for any link in the listing
-            if not a_tag:
-                a_tags = listing.find_all("a", href=True)
-                for tag in a_tags:
-                    href = tag.get("href", "")
-                    if "oferta" in href or "ds-7" in href or "ds7" in href:
-                        a_tag = tag
-                        break
-                # If still no match, just take the first link
-                if not a_tag and a_tags:
-                    a_tag = a_tags[0]
-            
-            if not a_tag:
-                logging.warning(f"No link found in listing, skipping")
                 continue
-                
-            raw_link = a_tag["href"]
+
+            a_tag = h2_tag.find("a", href=True)
+            raw_link = a_tag["href"] if a_tag else ""
             cleaned_link = basic_url_cleanup(raw_link)
 
-            # More flexible URL filtering
+            # Skip if the URL doesn't match our required prefix
             if not cleaned_link.startswith(REQUIRED_PREFIX):
-                # Allow some variations
-                if "ds-7" in cleaned_link or "ds7" in cleaned_link:
-                    pass  # Accept these variations
-                else:
-                    logging.info(f"Skipping non-matching URL: {cleaned_link}")
-                    continue
+                continue
 
-            # Extract title text with fallbacks
-            if a_tag and a_tag.get_text(strip=True):
-                full_name = a_tag.get_text(strip=True)
-            elif h2_tag:
-                full_name = h2_tag.get_text(strip=True)
-            else:
-                # Try to find any prominent text
-                for tag in ["h2", "h3", "h4", "strong", "b"]:
-                    element = listing.find(tag)
-                    if element:
-                        full_name = element.get_text(strip=True)
-                        break
-                else:
-                    full_name = "DS 7 Crossback (title not found)"
+            full_name = a_tag.get_text(strip=True) if a_tag else ""
 
-            # Extract description with multiple approaches
-            desc_tag = None
-            desc_selectors = [
-                {"data-sentry-element": "SubTitle"},
-                {"class": lambda c: c and "subtitle" in c.lower()},
-                {"class": lambda c: c and "desc" in c.lower()},
-                {"class": lambda c: c and "detail" in c.lower()},
-                {"class": lambda c: c and "parameter" in c.lower()},
-            ]
-            
-            for selector in desc_selectors:
-                for tag in ["p", "div", "span"]:
-                    desc_tag = listing.find(tag, attrs=selector)
-                    if desc_tag:
-                        break
-                if desc_tag:
-                    break
-            
-            # If still no description, look for text near price or engine details
-            if not desc_tag:
-                # Look for text containing common engine or parameter terms
-                for pattern in ["cm3", "cm³", "ccm", "kW", "KM", "HP", "benzyna", "diesel"]:
-                    for tag in listing.find_all(["p", "div", "span"]):
-                        if pattern in tag.get_text():
-                            desc_tag = tag
-                            break
-                    if desc_tag:
-                        break
-            
+            # Use the updated selector for description
+            desc_tag = listing.find("p", attrs={"data-sentry-element": "SubTitle"})
             full_desc = desc_tag.get_text(strip=True) if desc_tag else ""
-            
-            # Split description by bullet points or similar separators
-            for separator in ["•", "·", "●", "|", "-", ","]:
-                if separator in full_desc:
-                    parts = [part.strip() for part in full_desc.split(separator) if part.strip()]
-                    if len(parts) >= 2:  # If we found reasonable parts
-                        break
-            else:
-                # If no separator worked, use the whole string as one part
-                parts = [full_desc] if full_desc else []
+            parts = [part.strip() for part in full_desc.split("•") if part.strip()]
 
-            # Extract engine power
-            engine_power = ""
-            if len(parts) >= 2:
-                # Look for power patterns
-                for part in parts:
-                    if any(term in part.lower() for term in ["km", "kw", "hp", "ps", "cv"]):
-                        engine_power = part.strip()
-                        break
-                
-                if not engine_power and len(parts) >= 2:
-                    engine_power = parts[1].strip()  # Default to second part
-            
-            # Build description from remaining parts or the full description
-            if len(parts) >= 3:
-                description = " • ".join(parts[2:])
-            else:
-                description = full_desc
-            
-            # Enhanced year extraction
-            year = 0
-            year_tag = None
-            
-            # Try multiple selectors for year
-            for param_name in ["year", "rok", "production_year"]:
-                year_tag = listing.find(["dd", "div", "span"], {"data-parameter": param_name}) or \
-                          listing.find(["dd", "div", "span"], {"data-code": param_name})
-                if year_tag:
-                    break
-            
-            # Look for year pattern in text if tag not found
-            if not year_tag:
-                # Look for text with year pattern (4 digits between 1990-2030)
-                year_texts = re.findall(r'\b(19[9][0-9]|20[0-2][0-9])\b', str(listing))
-                if year_texts:
-                    try:
-                        year = int(year_texts[0])
-                    except ValueError:
-                        year = 0
-            else:
-                year_str = year_tag.get_text(strip=True)
-                try:
-                    year = int(re.search(r'\d{4}', year_str).group(0))
-                except (ValueError, AttributeError):
-                    # Try to extract any 4-digit number
-                    try:
-                        year = int(re.search(r'\d{4}', year_str).group(0))
-                    except (ValueError, AttributeError):
-                        year = 0
-            
-            # Default to current year if nothing found and seems reasonable
-            if year == 0 or year < 2000 or year > datetime.now().year:
-                year = datetime.now().year - 2  # Default to 2 years old
-            
-            # Enhanced mileage extraction
-            mileage_clean = 0
-            mileage_tag = None
-            
-            # Try multiple selectors for mileage
-            for param_name in ["mileage", "przebieg", "km"]:
-                mileage_tag = listing.find(["dd", "div", "span"], {"data-parameter": param_name}) or \
-                             listing.find(["dd", "div", "span"], {"data-code": param_name})
-                if mileage_tag:
-                    break
-            
-            # If not found by parameter, look for text with km pattern
-            if not mileage_tag:
-                for tag in listing.find_all(["p", "div", "span"]):
-                    text = tag.get_text().lower()
-                    if "km" in text and any(c.isdigit() for c in text):
-                        mileage_tag = tag
-                        break
-            
-            if mileage_tag:
-                mileage_text = mileage_tag.get_text(strip=True)
-                # Extract digits, handling formats like "35 000 km"
-                digits = re.sub(r'\D', '', mileage_text)
-                if digits:
-                    mileage_clean = int(digits)
-            
-            # Enhanced fuel type extraction
-            fuel_type = ""
-            fuel_tag = None
-            
-            # Try multiple selectors for fuel type
-            for param_name in ["fuel_type", "paliwo", "napęd", "fuel"]:
-                fuel_tag = listing.find(["dd", "div", "span"], {"data-parameter": param_name}) or \
-                          listing.find(["dd", "div", "span"], {"data-code": param_name})
-                if fuel_tag:
-                    break
-            
-            # If not found by parameter, look for specific fuel keywords
-            if not fuel_tag:
-                fuel_keywords = ["benzyna", "diesel", "hybryda", "elektryczny", "petrol", "gasoline", "hybrid", "electric"]
-                for tag in listing.find_all(["p", "div", "span"]):
-                    text = tag.get_text().lower()
-                    for keyword in fuel_keywords:
-                        if keyword in text:
-                            fuel_tag = tag
-                            fuel_type = keyword.capitalize()
-                            break
-                    if fuel_type:
-                        break
-            else:
-                fuel_type = fuel_tag.get_text(strip=True)
-            
-            # Handle specific "Hybryda" case
+            # For engine capacity, assume it's the first part (like "1 997 cm3")
+            engine_capacity_text = parts[0] if len(parts) >= 1 else ""
+            # Remove non-digit characters and convert to int:
+            engine_capacity_clean = int(re.sub(r'\D', '', engine_capacity_text)) if engine_capacity_text and re.search(
+                r'\d', engine_capacity_text) else 0
+
+            engine_power = parts[1] if len(parts) >= 2 else ""
+            # The rest becomes the description:
+            description = " • ".join(parts[2:]) if len(parts) >= 3 else ""
+
+            year_tag = listing.find("dd", {"data-parameter": "year"})
+            year_str = year_tag.get_text(strip=True) if year_tag else "0"
+            try:
+                year = int(year_str)
+            except ValueError:
+                year = 0
+
+            mileage_tag = listing.find("dd", {"data-parameter": "mileage"})
+            mileage_text = mileage_tag.get_text(strip=True) if mileage_tag else ""
+            # Remove non-digits (e.g., "km") and convert:
+            mileage_clean = int(re.sub(r'\D', '', mileage_text)) if mileage_text and re.search(r'\d',
+                                                                                               mileage_text) else 0
+
+            fuel_tag = listing.find("dd", {"data-parameter": "fuel_type"})
+            fuel_type = fuel_tag.get_text(strip=True) if fuel_tag else ""
+            # Replace "Hybryda" with "Hybryda Plug-in" (case-insensitive)
             if fuel_type.strip().lower() == "hybryda":
                 fuel_type = "Hybryda Plug-in"
-            
-            # Default if not found
-            if not fuel_type:
-                # Check title and description for clues
-                if any(term in full_name.lower() for term in ["hybrid", "hybryda", "phev", "e-tense"]):
-                    fuel_type = "Hybryda Plug-in"
-                elif any(term in full_name.lower() for term in ["diesel", "bluehdi"]):
-                    fuel_type = "Diesel"
-                else:
-                    fuel_type = "Benzyna"  # Default to gasoline
-            
-            # NOW that we have fuel_type defined, we can call determine_engine_capacity
-            engine_capacity_clean = determine_engine_capacity(full_name, full_desc, fuel_type)
-            
-            # Enhanced price extraction
-            price_pln = 0
-            price_tag = None
-            
-            # Try multiple selectors for price
-            price_selectors = [
-                {"data-sentry-element": "Price"},
-                {"data-testid": "ad-price"},
-                {"class": lambda c: c and "price" in c.lower()},
-                {"class": lambda c: c and "cena" in c.lower()},
-                {"class": lambda c: c and "cost" in c.lower()}
-            ]
-            
-            for selector in price_selectors:
-                for tag_type in ["h3", "p", "div", "span", "strong"]:
-                    price_tag = listing.find(tag_type, attrs=selector)
-                    if price_tag:
-                        break
-                if price_tag:
-                    break
-            
-            # If still no price, look for text with currency
-            if not price_tag:
-                for currency in ["zł", "PLN", "pln", "zl"]:
-                    for tag in listing.find_all(["p", "div", "span", "strong"]):
-                        if currency in tag.get_text():
-                            price_tag = tag
-                            break
-                    if price_tag:
-                        break
-            
+
+            price_tag = listing.find("h3", attrs={"data-sentry-element": "Price"})
             if price_tag:
                 raw_price = price_tag.get_text(strip=True)
                 try:
-                    # Extract digits, handling formats like "179 900 zł"
-                    price_digits = re.sub(r'\D', '', raw_price)
-                    if price_digits:
-                        price_pln = int(price_digits)
+                    price_pln = int(raw_price.replace(" ", "").replace("PLN", "").replace("zł", ""))
                 except ValueError:
                     price_pln = 0
-            
-            # Enhanced location extraction
-            location_tag = None
-            location_selectors = [
-                {"class": "ooa-oj1jk2"},
-                {"data-testid": "location-date"},
-                {"class": lambda c: c and "location" in c.lower()},
-                {"class": lambda c: c and "place" in c.lower()}
-            ]
-            
-            for selector in location_selectors:
-                for tag_type in ["p", "div", "span"]:
-                    location_tag = listing.find(tag_type, attrs=selector)
-                    if location_tag:
-                        break
-                if location_tag:
-                    break
-            
-            # If not found, look for text with city names or location patterns
-            if not location_tag:
-                cities = ["warszawa", "kraków", "wrocław", "poznań", "gdańsk", "szczecin", "łódź", "lublin"]
-                for tag in listing.find_all(["p", "div", "span"]):
-                    text = tag.get_text().lower()
-                    if any(city in text for city in cities) or "(" in text and ")" in text:
-                        location_tag = tag
-                        break
-            
+            else:
+                price_pln = 0
+
+            location_tag = listing.find("p", class_="ooa-oj1jk2")
             location_str = location_tag.get_text(strip=True) if location_tag else ""
             city, voivodship = parse_location(location_str)
-            
-            # Default location if not found
-            if not city:
-                city = "Nieznana"
-            if not voivodship:
-                voivodship = "Nieznane"
-            
-            # Enhanced seller type extraction
-            seller_type = "Firma"  # Default to dealer
-            seller_elem = None
-            
-            seller_selectors = [
-                {"class": lambda c: c and "ooa-12g3tpj" in c},
-                {"data-testid": "seller-info"},
-                {"class": lambda c: c and "seller" in c.lower()},
-                {"class": lambda c: c and "dealer" in c.lower()},
-                {"class": lambda c: c and "owner" in c.lower()}
-            ]
-            
-            for selector in seller_selectors:
-                for tag_type in ["article", "div", "section", "p"]:
-                    seller_elem = listing.find(tag_type, attrs=selector)
-                    if seller_elem:
-                        break
-                if seller_elem:
-                    break
-            
-            if seller_elem:
-                seller_text = seller_elem.get_text(strip=True)
-                if "prywatny" in seller_text.lower():
-                    seller_type = "Prywatny sprzedawca"
-            
-            # Generate other values
+
+            seller_elem = listing.find("article", class_=lambda c: c and "ooa-12g3tpj" in c)
+            seller_text = seller_elem.get_text(strip=True) if seller_elem else "Unknown"
+            seller_type = "Prywatny sprzedawca" if seller_text.lower() == "prywatny sprzedawca" else "Firma"
+
             scrape_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             found_version = extract_version(full_name, full_desc)
-            
-            # Ensure year and mileage are reasonable
-            if year <= 2016 or year > datetime.now().year:
-                year = 2020  # Default if unreasonable
-            
-            if mileage_clean > 500000 or mileage_clean < 10:
-                mileage_clean = 50000  # Default if unreasonable
-            
-            # Create Car object
+
             car = Car(
                 auction_id="",  # Will be set later
                 link=cleaned_link,
@@ -1008,10 +457,118 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 data_id=data_id
             )
             cars.append(car)
-            logging.info(f"Successfully parsed listing: {full_name[:30]}...")
         except Exception as e:
-            logging.error(f"Error parsing listing: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
-            
+            print(f"Error parsing listing: {e}")
     return cars
+
+
+def write_to_csv(cars: List[Car]) -> None:
+    import tempfile
+    import os
+
+    # Get the system temporary directory
+    temp_dir = tempfile.gettempdir()
+    # Define a path for your CSV file in that directory
+    csv_path = os.path.join(temp_dir, "cars.csv")
+
+    with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+        fieldnames = [
+            "auction_id", "link", "full_name", "description", "year",
+            "mileage_km", "engine_capacity", "engine_power", "fuel_type",
+            "seller_type", "city", "voivodship", "scrape_date", "listing_status", "version"
+        ]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for car in cars:
+            car_dict = asdict(car)
+            car_dict.pop("price_pln", None)
+            car_dict.pop("data_id", None)  # Don't include this in the CSV
+            writer.writerow(car_dict)
+    print(f"Data saved to file {csv_path} with {len(cars)} unique listings.")
+
+
+# ---------------------------
+# Main Scraper Function
+# ---------------------------
+def run_scraper():
+    print(f"[DEBUG] run_scraper starting at {datetime.now()}")
+    driver = None
+    all_cars: List[Car] = []
+
+    # NO DUPLICATE DETECTION AT ALL
+    # We're going to process every single listing on every page
+
+    auction_counter = 0
+    processed_counter = 0
+
+    try:
+        driver = setup_driver(headless=False)
+        driver.get(BASE_URL)
+        time.sleep(5)
+        total_auctions, total_pages = get_total_auction_count_and_pages(driver)
+        print(f"Total auctions found on the site: {total_auctions}")
+        print(f"Estimated total pages: {total_pages}")
+        save_page_html(driver, 1)
+        pages_to_check = min(total_pages, MAX_PAGES_TO_CHECK)
+
+        for current_page in range(1, pages_to_check + 1):
+            page_url = BASE_URL if current_page == 1 else f"{BASE_URL}&page={current_page}"
+            print(f"\nFetching page {current_page} of {pages_to_check}: {page_url}")
+            driver.get(page_url)
+            time.sleep(5)
+            scroll_page(driver, max_scrolls=10, wait=2)
+            save_page_html(driver, current_page)
+            html = driver.page_source
+            cars_on_page = extract_cars_from_html(html)
+
+            if not cars_on_page:
+                print(f"No auctions found on page {current_page}. Stopping.")
+                break
+
+            print(f"Found {len(cars_on_page)} cars on page {current_page}")
+
+            for car in cars_on_page:
+                processed_counter += 1
+
+                # NO DUPLICATE DETECTION AT ALL
+                # Process every car we find
+
+                # Generate auction ID
+                auction_counter += 1
+                mileage_digits = str(car.mileage_km)
+                car.auction_id = f"{auction_counter}_{mileage_digits}_{car.price_pln}"
+
+                # Insert the car into the database
+                try:
+                    db_id = insert_into_db(car)
+                    if db_id:
+                        print(f"Database insertion successful, ID: {db_id}")
+                    else:
+                        print("Database insertion failed")
+                except Exception as e:
+                    print(f"Error during database insertion: {e}")
+
+                # Add to the list of all cars (for CSV backup)
+                all_cars.append(car)
+
+            print(f"After page {current_page}:")
+            print(f"- Total processed and collected: {processed_counter}")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        if driver is not None:
+            driver.quit()
+            print("ChromeDriver closed successfully.")
+
+    print(f"[DEBUG] run_scraper ended at {datetime.now()}")
+    print("\n=== FINAL RESULTS ===")
+    print(f"Total auctions processed and collected: {processed_counter}")
+    write_to_csv(all_cars)
+
+
+if __name__ == "__main__":
+    run_scraper()
