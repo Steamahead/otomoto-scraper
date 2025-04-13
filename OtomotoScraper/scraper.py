@@ -257,7 +257,34 @@ def parse_location(location_str: str) -> Tuple[str, str]:
         city, voivodship = location_str.split("(", 1)
         return city.strip(), voivodship.rstrip(")").strip()
     return location_str.strip(), ""
-
+            
+def determine_engine_capacity(full_name, full_desc, fuel_type):
+    """
+    Determine engine capacity based on DS7 Crossback specific patterns.
+    Only 3 possible values: 1598cc (1.6L), 1997cc (2.0L), or 1499cc (1.5L)
+    """
+    combined_text = (full_name + " " + full_desc).lower()
+    
+    # Method 1: Check for specific engine designations
+    if any(term in combined_text for term in ["1.6", "1,6", "e-tense", "etense", "phev", "hybrid", "plug-in", "hybryda"]):
+        return 1598  # 1.6L for hybrids and PureTech
+    
+    if any(term in combined_text for term in ["2.0", "2,0", "180", "hdi 180", "bluehdi 180"]):
+        return 1997  # 2.0L BlueHDi
+    
+    if any(term in combined_text for term in ["1.5", "1,5", "130", "hdi 130", "bluehdi 130"]):
+        return 1499  # 1.5L BlueHDi
+    
+    # Method 2: Check for power ratings that indicate specific engines
+    power_matches = re.findall(r'(\d+)\s*(?:km|hp|ps|cv|ch)', combined_text, re.IGNORECASE)
+    if power_matches:
+        power = int(power_matches[0])
+        if power >= 200:  # High power is always the hybrid
+            return 1598  # 1.6L Hybrid
+        elif power >= 150:  # Mid power is usually 2.0 diesel
+            return 1997  # 2.0L Diesel
+        else:  # Lower power is usually 1.5 diesel
+            return 1499  # 1.5L Diesel
 # ---------------------------
 # Web Scraping Functions
 # ---------------------------
@@ -545,6 +572,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 # If no separator worked, use the whole string as one part
                 parts = [full_desc] if full_desc else []
 
+          # Keep your existing engine capacity extraction code
             # Extract engine capacity with improved logic
             engine_capacity_clean = 0
             if parts:
@@ -567,6 +595,9 @@ def extract_cars_from_html(html: str) -> List[Car]:
                     joined_digits = ''.join(digits)
                     if 500 <= int(joined_digits) <= 9999:
                         engine_capacity_clean = int(joined_digits)
+            
+            # ADD THIS LINE to override with our domain-specific knowledge
+            engine_capacity_clean = determine_engine_capacity(full_name, full_desc, fuel_type)
 
             # Extract engine power
             engine_power = ""
