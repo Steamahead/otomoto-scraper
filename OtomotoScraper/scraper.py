@@ -758,7 +758,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
             if len(parts) >= 2:
                 # Look for power patterns
                 for part in parts:
-                    if any(pattern in part.lower() for term in ["km", "kw", "hp", "ps", "cv"]):
+                    if any(term in part.lower() for term in ["km", "kw", "hp", "ps", "cv"]):
                         engine_power = part.strip()
                         break
                 
