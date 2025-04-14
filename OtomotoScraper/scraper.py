@@ -641,6 +641,9 @@ def run_scraper():
     all_cars: List[Car] = []
     auction_counter = 0
     processed_counter = 0
+    new_inserts_counter = 0     # Nowo dodane aukcje
+    duplicates_counter = 0      # Pominięte duplikaty
+    failed_inserts_counter = 0  # Nieudane wstawienia
 
     try:
         # First, ensure DataID column exists in database
@@ -668,13 +671,23 @@ def run_scraper():
 
                 # Insert into DB
                 try:
+                    before_id_count = get_today_listing_count()
                     db_id = insert_into_db(car)
+                    after_id_count = get_today_listing_count()
+                    
                     if db_id:
-                        logging.info(f"Database insertion successful, ID: {db_id}")
+                        if after_id_count > before_id_count:
+                            logging.info(f"Database insertion successful (new entry), ID: {db_id}")
+                            new_inserts_counter += 1
+                        else:
+                            logging.info(f"Database found existing entry, reused ID: {db_id}")
+                            duplicates_counter += 1
                     else:
                         logging.error("Database insertion failed")
+                        failed_inserts_counter += 1
                 except Exception as e:
                     logging.error(f"Error during database insertion: {e}")
+                    failed_inserts_counter += 1
 
                 all_cars.append(car)
 
@@ -709,19 +722,32 @@ def run_scraper():
 
                 # Insert the car into the database
                 try:
+                    before_id_count = get_today_listing_count()
                     db_id = insert_into_db(car)
+                    after_id_count = get_today_listing_count()
+                    
                     if db_id:
-                        logging.info(f"Database insertion successful, ID: {db_id}")
+                        if after_id_count > before_id_count:
+                            logging.info(f"Database insertion successful (new entry), ID: {db_id}")
+                            new_inserts_counter += 1
+                        else:
+                            logging.info(f"Database found existing entry, reused ID: {db_id}")
+                            duplicates_counter += 1
                     else:
                         logging.info("Database insertion failed")
+                        failed_inserts_counter += 1
                 except Exception as e:
                     logging.error(f"Error during database insertion: {e}")
+                    failed_inserts_counter += 1
 
                 # Add to the list of all cars (for CSV backup)
                 all_cars.append(car)
 
             logging.info(f"After page {current_page}:")
-            logging.info(f"- Total processed and collected: {processed_counter}")
+            logging.info(f"- Total processed: {processed_counter}")
+            logging.info(f"- New entries: {new_inserts_counter}")
+            logging.info(f"- Duplicates skipped: {duplicates_counter}")
+            logging.info(f"- Failed insertions: {failed_inserts_counter}")
 
             # Small delay to avoid overloading the server
             time.sleep(2)
@@ -733,9 +759,42 @@ def run_scraper():
 
     logging.info(f"[DEBUG] run_scraper ended at {datetime.now()}")
     logging.info("\n=== FINAL RESULTS ===")
-    logging.info(f"Total auctions processed and collected: {processed_counter}")
+    logging.info(f"Total auctions processed: {processed_counter}")
+    logging.info(f"New entries added to database: {new_inserts_counter}")
+    logging.info(f"Duplicate auctions skipped: {duplicates_counter}")
+    logging.info(f"Failed insertions: {failed_inserts_counter}")
+    logging.info(f"Total auctions in CSV: {len(all_cars)}")
     write_to_csv(all_cars)
 
+
+def get_today_listing_count():
+    """Get the count of listings added today."""
+    connection = None
+    cursor = None
+    
+    try:
+        connection = get_sql_connection()
+        if not connection:
+            return 0
+            
+        cursor = connection.cursor()
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        query = "SELECT COUNT(*) FROM Listings WHERE CONVERT(date, ScrapeDate) = %s"
+        cursor.execute(query, (today,))
+        count = cursor.fetchone()[0]
+        return count
+    except Exception as e:
+        logging.warning(f"Error getting today's listing count: {e}")
+        return 0
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            try:
+                connection.close()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     run_scraper()
