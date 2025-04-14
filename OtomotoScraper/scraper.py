@@ -214,10 +214,6 @@ def ensure_data_id_column():
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
-    if LOCAL_MODE:
-        logging.info(f"LOCAL MODE: Simulating DB insert for: {car.full_name[:30]}")
-        return 9999  # Symulowany ID
-        
     logging.info(f"Inserting into database: {car.full_name[:30]}")
     connection = None
     cursor = None
@@ -234,8 +230,8 @@ def insert_into_db(car: Car) -> int:
             auction_key = compute_auction_key(car.link)
             auction_number = get_auction_number(auction_key, car.data_id)
             
-            # CRITICAL CHANGE: First check if auction already exists with this auction number
-            # and was scraped today to prevent duplicates
+            # ADDED: Check if this auction was already scraped today (by auction number)
+            # This prevents duplicate insertions of the same auction on the same day
             today = datetime.now().strftime("%Y-%m-%d")
             check_query = """
             SELECT TOP 1 ListingID 
@@ -250,8 +246,9 @@ def insert_into_db(car: Car) -> int:
             
             if existing_record:
                 # Auction already exists today - return existing ID and skip insertion
-                logging.info(f"Auction with number {auction_number} already scraped today. Skipping duplicate.")
-                return existing_record[0]
+                listing_id = existing_record[0]
+                logging.info(f"Auction with number {auction_number} already scraped today. Reusing ID: {listing_id}")
+                return listing_id
 
             # Check if DataID column exists before inserting
             has_data_id_column = True
