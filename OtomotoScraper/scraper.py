@@ -41,6 +41,7 @@ CANDIDATE_VERSIONS = [
     "La Premiere"
 ]
 
+
 @dataclass
 class Car:
     auction_id: str  # External ID
@@ -69,19 +70,19 @@ def get_sql_connection():
     """Get SQL connection using SQL authentication only"""
     import logging
     import os
-    
+
     try:
         # Import pymssql directly
         import pymssql
-        
+
         # Get connection details from environment variables
         server = os.environ.get('DB_SERVER')
         database = os.environ.get('DB_NAME')
         username = os.environ.get('DB_UID')
         password = os.environ.get('DB_PWD')
-        
+
         logging.info(f"Connecting to SQL server with SQL auth: {server}/{database} as {username}")
-        
+
         # Connect using pymssql with SQL authentication
         connection = pymssql.connect(
             server=server,
@@ -91,7 +92,7 @@ def get_sql_connection():
             timeout=30,
             appname="AzureFunctionsApp"
         )
-        
+
         logging.info("SQL connection successful with SQL auth")
         return connection
     except Exception as e:
@@ -100,38 +101,57 @@ def get_sql_connection():
         logging.error(traceback.format_exc())
         return None
 
+
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
     return hashlib.md5(url.encode('utf-8')).hexdigest()
 
-def get_auction_number(auction_key: str) -> int:
-    """Checks if an AuctionNumber already exists for the given AuctionKey."""
-    logging.info(f"Getting auction number for key: {auction_key}")
+
+def get_auction_number(auction_key: str, data_id: str) -> int:
+    """Checks if an AuctionNumber already exists for the given AuctionKey or DataID."""
+    logging.info(f"Getting auction number for key: {auction_key}, data_id: {data_id}")
     connection = None
-    
+
     try:
         connection = get_sql_connection()
         if not connection:
             logging.error("Failed to establish database connection")
             return 1000000  # Default value
-            
+
         cursor = connection.cursor()
-        
-        # Check for existing auction number
+
+        # First check for existing auction by auction_key (URL-based)
         query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = %s ORDER BY CreatedDate DESC"
         cursor.execute(query, (auction_key,))
         row = cursor.fetchone()
-        
+
         if row:
             auction_number = row[0]
-            logging.info(f"Found existing auction number: {auction_number}")
-        else:
-            # Get max auction number
-            max_query = "SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings"
-            cursor.execute(max_query)
-            max_val = cursor.fetchone()[0]
-            auction_number = int(max_val) + 1 
-            logging.info(f"Created new auction number: {auction_number}")
+            logging.info(f"Found existing auction number by URL: {auction_number}")
+            return auction_number
+
+        # If data_id is not empty, check if an auction with this data_id already exists
+        if data_id:
+            # Check if the column exists first
+            try:
+                data_id_query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE DataID = %s ORDER BY CreatedDate DESC"
+                cursor.execute(data_id_query, (data_id,))
+                data_id_row = cursor.fetchone()
+                
+                if data_id_row:
+                    auction_number = data_id_row[0]
+                    logging.info(f"Found existing auction number by DataID: {auction_number}")
+                    return auction_number
+            except Exception as e:
+                # DataID column might not exist yet
+                logging.warning(f"Error checking DataID (column might not exist): {e}")
+
+        # Get a new auction number if no match found
+        max_query = "SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings"
+        cursor.execute(max_query)
+        max_val = cursor.fetchone()[0]
+        auction_number = int(max_val) + 1
+        logging.info(f"Created new auction number: {auction_number}")
 
         return auction_number
     except Exception as e:
@@ -147,51 +167,139 @@ def get_auction_number(auction_key: str) -> int:
             except Exception as close_error:
                 logging.warning(f"Error closing connection: {str(close_error)}")
 
-def insert_into_db(car: Car) -> int:
-    """Insert a car record into the database and return the ListingID."""
-    logging.info(f"Inserting into database: {car.full_name[:30]}")
+
+def ensure_data_id_column():
+    """Ensure the DataID column exists in the Listings table."""
     connection = None
     cursor = None
     
     try:
         connection = get_sql_connection()
         if not connection:
-            logging.error(f"Failed to establish database connection for car: {car.full_name}")
-            return None
+            logging.error("Failed to establish database connection")
+            return
             
         cursor = connection.cursor()
         
+        # Check if DataID column exists
+        check_query = """
+        IF NOT EXISTS (
+            SELECT * FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'Listings' AND COLUMN_NAME = 'DataID'
+        )
+        BEGIN
+            ALTER TABLE Listings ADD DataID NVARCHAR(100) NULL;
+            PRINT 'DataID column added successfully.';
+        END
+        ELSE
+        BEGIN
+            PRINT 'DataID column already exists.';
+        END
+        """
+        
+        cursor.execute(check_query)
+        connection.commit()
+        logging.info("Ensured DataID column exists")
+    except Exception as e:
+        logging.error(f"Error ensuring DataID column: {str(e)}")
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            try:
+                connection.close()
+            except Exception as close_error:
+                logging.warning(f"Error closing connection: {str(close_error)}")
+
+
+def insert_into_db(car: Car) -> int:
+    """Insert a car record into the database and return the ListingID."""
+    logging.info(f"Inserting into database: {car.full_name[:30]}")
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_sql_connection()
+        if not connection:
+            logging.error(f"Failed to establish database connection for car: {car.full_name}")
+            return None
+
+        cursor = connection.cursor()
+
         try:
             auction_key = compute_auction_key(car.link)
-            auction_number = get_auction_number(auction_key)
+            auction_number = get_auction_number(auction_key, car.data_id)
 
-            # For pymssql, use %s placeholders
-            insert_query = """
-               INSERT INTO Listings (
-                   ListingURL, AuctionKey, AuctionNumber, FullName, Description, Year, Mileage, EngineCapacity,
-                   FuelType, City, Voivodship, SellerType, ScrapeDate, ListingStatus, Version, Price
-               ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-               SELECT SCOPE_IDENTITY();
-               """
-               
-            params = (
-                car.link,
-                auction_key,
-                auction_number,
-                car.full_name,
-                car.description,
-                car.year,
-                car.mileage_km,
-                car.engine_capacity,
-                car.fuel_type,
-                car.city,
-                car.voivodship,
-                car.seller_type,
-                car.scrape_date,
-                car.listing_status,
-                car.version,
-                car.price_pln
-            )
+            # Check if DataID column exists before inserting
+            has_data_id_column = True
+            try:
+                check_query = """
+                SELECT COUNT(*) 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_NAME = 'Listings' AND COLUMN_NAME = 'DataID'
+                """
+                cursor.execute(check_query)
+                column_count = cursor.fetchone()[0]
+                has_data_id_column = column_count > 0
+            except Exception as e:
+                logging.warning(f"Error checking for DataID column: {e}")
+                has_data_id_column = False
+
+            # Insert query with or without DataID based on column existence
+            if has_data_id_column:
+                insert_query = """
+                   INSERT INTO Listings (
+                       ListingURL, AuctionKey, AuctionNumber, FullName, Description, Year, Mileage, EngineCapacity,
+                       FuelType, City, Voivodship, SellerType, ScrapeDate, ListingStatus, Version, Price, DataID
+                   ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                   SELECT SCOPE_IDENTITY();
+                   """
+                params = (
+                    car.link,
+                    auction_key,
+                    auction_number,
+                    car.full_name,
+                    car.description,
+                    car.year,
+                    car.mileage_km,
+                    car.engine_capacity,
+                    car.fuel_type,
+                    car.city,
+                    car.voivodship,
+                    car.seller_type,
+                    car.scrape_date,
+                    car.listing_status,
+                    car.version,
+                    car.price_pln,
+                    car.data_id  # Include data_id in the parameters
+                )
+            else:
+                # Original query without DataID
+                insert_query = """
+                   INSERT INTO Listings (
+                       ListingURL, AuctionKey, AuctionNumber, FullName, Description, Year, Mileage, EngineCapacity,
+                       FuelType, City, Voivodship, SellerType, ScrapeDate, ListingStatus, Version, Price
+                   ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                   SELECT SCOPE_IDENTITY();
+                   """
+                params = (
+                    car.link,
+                    auction_key,
+                    auction_number,
+                    car.full_name,
+                    car.description,
+                    car.year,
+                    car.mileage_km,
+                    car.engine_capacity,
+                    car.fuel_type,
+                    car.city,
+                    car.voivodship,
+                    car.seller_type,
+                    car.scrape_date,
+                    car.listing_status,
+                    car.version,
+                    car.price_pln
+                )
 
             cursor.execute(insert_query, params)
             listing_id = cursor.fetchone()[0]
@@ -218,12 +326,14 @@ def insert_into_db(car: Car) -> int:
             except Exception as close_error:
                 logging.warning(f"Error closing connection: {str(close_error)}")
 
+
 # ---------------------------
 # Utility Functions
 # ---------------------------
 def debug_print(message):
     if DEBUG_MODE:
         logging.info(f"[DEBUG] {message}")
+
 
 def basic_url_cleanup(url: str) -> str:
     """Very basic URL cleanup - just handle relative URLs"""
@@ -235,6 +345,7 @@ def basic_url_cleanup(url: str) -> str:
 
     return url
 
+
 def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
     candidate = candidate.lower()
     text = text.lower()
@@ -245,17 +356,20 @@ def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
             return True
     return False
 
+
 def extract_version(full_name: str, description: str) -> str:
     for cand in CANDIDATE_VERSIONS:
         if fuzzy_contains(cand, full_name, 0.9) or fuzzy_contains(cand, description, 0.9):
             return cand
     return ""
 
+
 def parse_location(location_str: str) -> Tuple[str, str]:
     if "(" in location_str and location_str.endswith(")"):
         city, voivodship = location_str.split("(", 1)
         return city.strip(), voivodship.rstrip(")").strip()
     return location_str.strip(), ""
+
 
 # ---------------------------
 # Web Scraping Functions
@@ -268,7 +382,7 @@ def get_page_html(url: str) -> str:
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Referer': 'https://www.otomoto.pl/'
     }
-    
+
     try:
         response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
@@ -277,12 +391,13 @@ def get_page_html(url: str) -> str:
         logging.error(f"Error fetching URL {url}: {str(e)}")
         return ""
 
+
 def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
     try:
         soup = BeautifulSoup(html, "html.parser")
         total_auctions = 0
         total_pages = 1
-        
+
         # Find total auctions from h1 text
         h1_tag = soup.find("h1")
         if h1_tag:
@@ -291,7 +406,7 @@ def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
             if match:
                 total_auctions = int(match.group(1))
                 debug_print(f"Found total auctions from h1: {total_auctions}")
-        
+
         # Find total auctions from text if not found in h1
         if total_auctions == 0:
             texts_with_counts = soup.find_all(string=re.compile(r'\d+\s+ogłosz'))
@@ -301,7 +416,7 @@ def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
                     total_auctions = int(match.group(1))
                     debug_print(f"Found total auctions from text: {total_auctions}")
                     break
-        
+
         # Find pagination
         pagination = soup.find("ul", class_=lambda x: x and "pagination" in x)
         if pagination:
@@ -310,17 +425,17 @@ def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
             if page_numbers:
                 total_pages = max(page_numbers)
                 debug_print(f"Found total pages from pagination: {total_pages}")
-        
+
         # Calculate total pages if not found
         if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
             total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
             debug_print(f"Estimated total pages from auction count: {total_pages}")
-        
+
         # Calculate total auctions if not found
         if total_auctions == 0 and total_pages > 1:
             total_auctions = total_pages * EXPECTED_PER_PAGE
             debug_print(f"Estimated total auctions from page count: {total_auctions}")
-        
+
         # Use defaults if nothing found
         if total_auctions == 0:
             total_auctions = 320
@@ -328,29 +443,30 @@ def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
         if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
             total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
             debug_print(f"Using calculated page count: {total_pages}")
-            
+
         return total_auctions, total_pages
     except Exception as e:
         logging.error(f"Error getting auction counts: {e}")
         return 320, 10
 
+
 def extract_cars_from_html(html: str) -> List[Car]:
     cars: List[Car] = []
     soup = BeautifulSoup(html, "html.parser")
-    
+
     # Try to find the container with multiple possible selectors
     container = soup.find("div", {"data-testid": "search-results"})
     if not container:
         # Try alternative selectors if the primary one fails
         container = soup.find("div", class_=lambda c: c and "ooa-1e1uucc" in c)
-    
+
     if not container:
         logging.error("Search results container not found in HTML!")
         return cars
 
     # Find all listings
     listings = container.find_all("article", attrs={"data-id": True})
-    
+
     for listing in listings:
         try:
             # Get the data-id attribute
@@ -379,7 +495,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
             if not desc_tag:
                 # Try alternative selector
                 desc_tag = listing.find("p", class_=lambda c: c and "ooa-1e4spvk" in c)
-            
+
             full_desc = desc_tag.get_text(strip=True) if desc_tag else ""
             parts = [part.strip() for part in full_desc.split("•") if part.strip()]
 
@@ -390,7 +506,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
 
             # Extract engine power
             engine_power = parts[1] if len(parts) >= 2 else ""
-            
+
             # Build description from remaining parts
             description = " • ".join(parts[2:]) if len(parts) >= 3 else ""
 
@@ -406,7 +522,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
             mileage_tag = listing.find("dd", {"data-parameter": "mileage"})
             mileage_text = mileage_tag.get_text(strip=True) if mileage_tag else ""
             mileage_clean = int(re.sub(r'\D', '', mileage_text)) if mileage_text and re.search(r'\d',
-                                                                                              mileage_text) else 0
+                                                                                               mileage_text) else 0
 
             # Extract fuel type
             fuel_tag = listing.find("dd", {"data-parameter": "fuel_type"})
@@ -419,7 +535,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
             if not price_tag:
                 # Try alternative selector
                 price_tag = listing.find("p", attrs={"data-testid": "ad-price"})
-            
+
             if price_tag:
                 raw_price = price_tag.get_text(strip=True)
                 try:
@@ -433,7 +549,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
             location_tag = listing.find("p", class_="ooa-oj1jk2")
             if not location_tag:
                 location_tag = listing.find("p", attrs={"data-testid": "location-date"})
-            
+
             location_str = location_tag.get_text(strip=True) if location_tag else ""
             city, voivodship = parse_location(location_str)
 
@@ -469,8 +585,9 @@ def extract_cars_from_html(html: str) -> List[Car]:
             cars.append(car)
         except Exception as e:
             logging.error(f"Error parsing listing: {e}")
-            
+
     return cars
+
 
 def write_to_csv(cars: List[Car]) -> None:
     try:
@@ -496,6 +613,7 @@ def write_to_csv(cars: List[Car]) -> None:
     except Exception as e:
         logging.error(f"Error writing CSV: {e}")
 
+
 # ---------------------------
 # Main Scraper Function
 # ---------------------------
@@ -506,17 +624,20 @@ def run_scraper():
     processed_counter = 0
 
     try:
+        # First, ensure DataID column exists in database
+        ensure_data_id_column()
+        
         # Get the main page
         html = get_page_html(BASE_URL)
         if not html:
             logging.error("Failed to fetch the main page")
             return
-            
+
         # Get total auctions and pages
         total_auctions, total_pages = get_total_auction_count_and_pages(html)
         logging.info(f"Total auctions found on the site: {total_auctions}")
         logging.info(f"Estimated total pages: {total_pages}")
-        
+
         # Process the first page HTML we already have
         cars_on_page = extract_cars_from_html(html)
         if cars_on_page:
@@ -525,7 +646,7 @@ def run_scraper():
                 auction_counter += 1
                 mileage_digits = str(car.mileage_km)
                 car.auction_id = f"{auction_counter}_{mileage_digits}_{car.price_pln}"
-                
+
                 # Insert into DB
                 try:
                     db_id = insert_into_db(car)
@@ -535,22 +656,22 @@ def run_scraper():
                         logging.error("Database insertion failed")
                 except Exception as e:
                     logging.error(f"Error during database insertion: {e}")
-                
+
                 all_cars.append(car)
-        
+
         # Determine how many pages to check
         pages_to_check = min(total_pages, MAX_PAGES_TO_CHECK)
-        
+
         # Now process remaining pages
         for current_page in range(2, pages_to_check + 1):
             page_url = f"{BASE_URL}&page={current_page}"
             logging.info(f"\nFetching page {current_page} of {pages_to_check}: {page_url}")
-            
+
             html = get_page_html(page_url)
             if not html:
                 logging.error(f"Failed to fetch page {current_page}")
                 continue
-                
+
             cars_on_page = extract_cars_from_html(html)
 
             if not cars_on_page:
@@ -561,7 +682,7 @@ def run_scraper():
 
             for car in cars_on_page:
                 processed_counter += 1
-                
+
                 # Generate auction ID
                 auction_counter += 1
                 mileage_digits = str(car.mileage_km)
@@ -582,7 +703,7 @@ def run_scraper():
 
             logging.info(f"After page {current_page}:")
             logging.info(f"- Total processed and collected: {processed_counter}")
-            
+
             # Small delay to avoid overloading the server
             time.sleep(2)
 
