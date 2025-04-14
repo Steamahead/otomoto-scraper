@@ -214,6 +214,10 @@ def ensure_data_id_column():
 
 def insert_into_db(car: Car) -> int:
     """Insert a car record into the database and return the ListingID."""
+    if LOCAL_MODE:
+        logging.info(f"LOCAL MODE: Simulating DB insert for: {car.full_name[:30]}")
+        return 9999  # Symulowany ID
+        
     logging.info(f"Inserting into database: {car.full_name[:30]}")
     connection = None
     cursor = None
@@ -229,6 +233,25 @@ def insert_into_db(car: Car) -> int:
         try:
             auction_key = compute_auction_key(car.link)
             auction_number = get_auction_number(auction_key, car.data_id)
+            
+            # CRITICAL CHANGE: First check if auction already exists with this auction number
+            # and was scraped today to prevent duplicates
+            today = datetime.now().strftime("%Y-%m-%d")
+            check_query = """
+            SELECT TOP 1 ListingID 
+            FROM Listings 
+            WHERE AuctionNumber = %s 
+            AND CONVERT(date, ScrapeDate) = %s
+            ORDER BY ScrapeDate DESC
+            """
+            
+            cursor.execute(check_query, (auction_number, today))
+            existing_record = cursor.fetchone()
+            
+            if existing_record:
+                # Auction already exists today - return existing ID and skip insertion
+                logging.info(f"Auction with number {auction_number} already scraped today. Skipping duplicate.")
+                return existing_record[0]
 
             # Check if DataID column exists before inserting
             has_data_id_column = True
@@ -325,7 +348,6 @@ def insert_into_db(car: Car) -> int:
                 logging.debug("Connection closed in insert_into_db")
             except Exception as close_error:
                 logging.warning(f"Error closing connection: {str(close_error)}")
-
 
 # ---------------------------
 # Utility Functions
