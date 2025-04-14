@@ -19,7 +19,7 @@ import tempfile
 BASE_URL = ("https://www.otomoto.pl/osobowe/ds-automobiles/ds-7-crossback?"
             "search[advanced_search_expanded]=true")
 EXPECTED_PER_PAGE = 32
-MAX_PAGES_TO_CHECK = 20
+MAX_PAGES_TO_CHECK = 5
 DEBUG_MODE = True
 
 # Process only auctions whose normalized URL begins with this prefix.
