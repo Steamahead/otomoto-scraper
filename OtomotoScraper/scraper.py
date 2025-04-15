@@ -74,11 +74,11 @@ def get_sql_connection():
         # Import pymssql directly
         import pymssql
         
-        # Get connection details from environment variables
-        server = os.environ.get('DB_SERVER')
-        database = os.environ.get('DB_NAME')
-        username = os.environ.get('DB_UID')
-        password = os.environ.get('DB_PWD')
+        # Hard-coded for testing - use these values since they work in your test script
+        server = "azfullsteam.database.windows.net"
+        database = "OtomotoDBZ"  # This database works with otomoto_new
+        username = "otomoto_new"
+        password = "Andrzej1!"
         
         logging.info(f"Connecting to SQL server with SQL auth: {server}/{database} as {username}")
         
