@@ -70,7 +70,6 @@ def get_sql_connection():
     """Get SQL connection using SQL authentication only"""
     import logging
     import os
-
     try:
         # Import pymssql directly
         import pymssql
@@ -81,8 +80,13 @@ def get_sql_connection():
         username = os.environ.get('DB_UID')
         password = os.environ.get('DB_PWD')
 
-        logging.info(f"Connecting to SQL server with SQL auth: {server}/{database} as {username}")
-
+        # Log connection details (masking password)
+        logging.info(f"Connection details: Server={server}, Database={database}, User={username}")
+        
+        # Try building a connection string
+        connection_string = f"Server={server};Database={database};User Id={username};Password={password};TrustServerCertificate=true;Connection Timeout=30;"
+        logging.info(f"Attempting connection with connection string (password hidden)")
+        
         # Connect using pymssql with SQL authentication
         connection = pymssql.connect(
             server=server,
@@ -90,9 +94,10 @@ def get_sql_connection():
             password=password,
             database=database,
             timeout=30,
-            appname="AzureFunctionsApp"
+            appname="AzureFunctionsApp",
+            tds_version="7.3"  # Try specifying TDS version
         )
-
+        
         logging.info("SQL connection successful with SQL auth")
         return connection
     except Exception as e:
@@ -100,7 +105,6 @@ def get_sql_connection():
         import traceback
         logging.error(traceback.format_exc())
         return None
-
 
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
