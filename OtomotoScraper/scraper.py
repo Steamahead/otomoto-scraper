@@ -69,19 +69,19 @@ def get_sql_connection():
     """Get SQL connection using SQL authentication only"""
     import logging
     import os
-    
+
     try:
         # Import pymssql directly
         import pymssql
-        
-        # Hard-coded for testing - use these values since they work in your test script
-        server = "azfullsteam.database.windows.net"
-        database = "OtomotoDBZ"  # This database works with otomoto_new
-        username = "otomoto_new"
-        password = "Andrzej1!"
-        
+
+        # Get connection details from environment variables
+        server = os.environ.get('DB_SERVER')
+        database = os.environ.get('DB_NAME')
+        username = os.environ.get('DB_UID')
+        password = os.environ.get('DB_PWD')
+
         logging.info(f"Connecting to SQL server with SQL auth: {server}/{database} as {username}")
-        
+
         # Connect using pymssql with SQL authentication
         connection = pymssql.connect(
             server=server,
@@ -91,7 +91,7 @@ def get_sql_connection():
             timeout=30,
             appname="AzureFunctionsApp"
         )
-        
+
         logging.info("SQL connection successful with SQL auth")
         return connection
     except Exception as e:
@@ -99,7 +99,7 @@ def get_sql_connection():
         import traceback
         logging.error(traceback.format_exc())
         return None
-
+                
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
     return hashlib.md5(url.encode('utf-8')).hexdigest()
