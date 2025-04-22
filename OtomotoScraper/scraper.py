@@ -443,7 +443,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
             now = datetime.now()
             scrape_date = now.strftime("%Y-%m-%d")
             scrape_time = now.strftime("%H:%M:%S")
-            #found_version = extract_version(full_name, full_desc)
+            found_version = extract_version(full_name, full_desc)
 
             # Create Car object
             car = Car(
