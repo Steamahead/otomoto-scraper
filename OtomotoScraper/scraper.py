@@ -57,6 +57,7 @@ class Car:
     city: str
     voivodship: str
     scrape_date: str  # The date/time the data was scraped
+    scrape_time: str  # <-- NEW: time as HH:MM:SS
     listing_status: str  # Default "Active"
     version: str  # DS version/inspiration (from fuzzy lookup)
     data_id: str  # Original data-id from HTML
@@ -169,7 +170,7 @@ def insert_into_db(car: Car) -> int:
             insert_query = """
                INSERT INTO Listings (
                    ListingURL, AuctionKey, AuctionNumber, FullName, Description, Year, Mileage, EngineCapacity,
-                   FuelType, City, Voivodship, SellerType, ScrapeDate, ListingStatus, Version, Price
+                   FuelType, City, Voivodship, SellerType, ScrapeDate, ScrapeDateTime, ListingStatus, Version, Price
                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                SELECT SCOPE_IDENTITY();
                """
@@ -188,6 +189,7 @@ def insert_into_db(car: Car) -> int:
                 car.voivodship,
                 car.seller_type,
                 car.scrape_date,
+                car.scrape_time,
                 car.listing_status,
                 car.version,
                 car.price_pln
@@ -353,9 +355,6 @@ def extract_cars_from_html(html: str) -> List[Car]:
     
     for listing in listings:
         try:
-            # Get the data-id attribute
-            data_id = listing.get("data-id", "")
-
             # Get title and link
             h2_tag = listing.find("h2", class_=lambda c: c and "ooa-1jjzghu" in c)
             if not h2_tag:
@@ -443,8 +442,10 @@ def extract_cars_from_html(html: str) -> List[Car]:
             seller_type = "Prywatny sprzedawca" if "prywatny" in seller_text.lower() else "Firma"
 
             # Generate other values
-            scrape_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            found_version = extract_version(full_name, full_desc)
+            now = datetime.now()
+            scrape_date = now.strftime("%Y-%m-%d")
+            scrape_time = now.strftime("%H:%M:%S")
+            #found_version = extract_version(full_name, full_desc)
 
             # Create Car object
             car = Car(
@@ -464,8 +465,9 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 listing_status="Active",
                 version=found_version,
                 scrape_date=scrape_date,
-                data_id=data_id
-            )
+                scrape_time=scrape_time,
+                version=found_version
+                    )
             cars.append(car)
         except Exception as e:
             logging.error(f"Error parsing listing: {e}")
@@ -474,23 +476,21 @@ def extract_cars_from_html(html: str) -> List[Car]:
 
 def write_to_csv(cars: List[Car]) -> None:
     try:
-        # Get the system temporary directory
         temp_dir = tempfile.gettempdir()
-        # Define a path for your CSV file in that directory
         csv_path = os.path.join(temp_dir, "cars.csv")
 
         with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
             fieldnames = [
                 "auction_id", "link", "full_name", "description", "year",
                 "mileage_km", "engine_capacity", "engine_power", "fuel_type",
-                "seller_type", "city", "voivodship", "scrape_date", "listing_status", "version"
+                "seller_type", "city", "voivodship",
+                "scrape_date", "scrape_time", "listing_status", "version"
             ]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for car in cars:
                 car_dict = asdict(car)
                 car_dict.pop("price_pln", None)
-                car_dict.pop("data_id", None)  # Don't include this in the CSV
                 writer.writerow(car_dict)
         logging.info(f"Data saved to file {csv_path} with {len(cars)} unique listings.")
     except Exception as e:
