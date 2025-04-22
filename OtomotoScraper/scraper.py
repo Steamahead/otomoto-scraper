@@ -60,8 +60,6 @@ class Car:
     scrape_time: str  # <-- NEW: time as HH:MM:SS
     listing_status: str  # Default "Active"
     version: str  # DS version/inspiration (from fuzzy lookup)
-    data_id: str  # Original data-id from HTML
-
 
 # ---------------------------
 # Database Functions
@@ -465,8 +463,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 listing_status="Active",
                 version=found_version,
                 scrape_date=scrape_date,
-                scrape_time=scrape_time,
-                version=found_version
+                scrape_time=scrape_time               
                     )
             cars.append(car)
         except Exception as e:
