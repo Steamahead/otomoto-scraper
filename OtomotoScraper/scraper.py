@@ -337,61 +337,54 @@ def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
 def extract_cars_from_html(html: str) -> List[Car]:
     cars: List[Car] = []
     soup = BeautifulSoup(html, "html.parser")
-    
-    # Try to find the container with multiple possible selectors
     container = soup.find("div", {"data-testid": "search-results"})
     if not container:
-        # Try alternative selectors if the primary one fails
-        container = soup.find("div", class_=lambda c: c and "ooa-1e1uucc" in c)
-    
-    if not container:
-        logging.error("Search results container not found in HTML!")
+        print("Search results container not found in HTML!")
         return cars
 
-    # Find all listings
     listings = container.find_all("article", attrs={"data-id": True})
-    
     for listing in listings:
         try:
-            # Get title and link
             h2_tag = listing.find("h2", class_=lambda c: c and "ooa-1jjzghu" in c)
             if not h2_tag:
-                # Try alternative selector
-                h2_tag = listing.find("h2", {"data-testid": "ad-title"})
-                if not h2_tag:
-                    continue
-
+                continue
             a_tag = h2_tag.find("a", href=True)
             raw_link = a_tag["href"] if a_tag else ""
-            cleaned_link = basic_url_cleanup(raw_link)
-
-            # Skip if the URL doesn't match our required prefix
-            if not cleaned_link.startswith(REQUIRED_PREFIX):
+            normalized_link = normalize_url(raw_link)
+            if not normalized_link.startswith(REQUIRED_PREFIX):
                 continue
 
             full_name = a_tag.get_text(strip=True) if a_tag else ""
 
-            # Extract description
+            # -- Description
             desc_tag = listing.find("p", attrs={"data-sentry-element": "SubTitle"})
             if not desc_tag:
-                # Try alternative selector
-                desc_tag = listing.find("p", class_=lambda c: c and "ooa-1e4spvk" in c)
-            
+                desc_tag = listing.find("p", class_=lambda c: c and "description" in c.lower())
             full_desc = desc_tag.get_text(strip=True) if desc_tag else ""
+
             parts = [part.strip() for part in full_desc.split("•") if part.strip()]
 
-            # Extract engine capacity
-            engine_capacity_text = parts[0] if len(parts) >= 1 else ""
-            engine_capacity_clean = int(re.sub(r'\D', '', engine_capacity_text)) if engine_capacity_text and re.search(
-                r'\d', engine_capacity_text) else 0
+            # Engine capacity: look near the svg icon for engine
+            engine_capacity_clean = 0
+            svg_icon = listing.find('svg', class_='ooa-c3wb15')
+            if svg_icon:
+                # Try next siblings for capacity text
+                next_sib = svg_icon.find_next_sibling(text=True)
+                if next_sib and re.search(r'\d', next_sib.strip()):
+                    digits = re.sub(r'\D', '', next_sib.strip())
+                    if digits:
+                        engine_capacity_clean = int(digits)
+                else:
+                    next_sib_span = svg_icon.find_next_sibling('span')
+                    if next_sib_span:
+                        digits = re.sub(r'\D', '', next_sib_span.get_text(strip=True))
+                        if digits:
+                            engine_capacity_clean = int(digits)
 
-            # Extract engine power
+            # Engine power remains as before (from parts, if available)
             engine_power = parts[1] if len(parts) >= 2 else ""
-            
-            # Build description from remaining parts
             description = " • ".join(parts[2:]) if len(parts) >= 3 else ""
 
-            # Extract year
             year_tag = listing.find("dd", {"data-parameter": "year"})
             year_str = year_tag.get_text(strip=True) if year_tag else "0"
             try:
@@ -399,56 +392,41 @@ def extract_cars_from_html(html: str) -> List[Car]:
             except ValueError:
                 year = 0
 
-            # Extract mileage
             mileage_tag = listing.find("dd", {"data-parameter": "mileage"})
             mileage_text = mileage_tag.get_text(strip=True) if mileage_tag else ""
-            mileage_clean = int(re.sub(r'\D', '', mileage_text)) if mileage_text and re.search(r'\d',
-                                                                                              mileage_text) else 0
+            mileage_clean = int(re.sub(r'\D', '', mileage_text)) if mileage_text and re.search(r'\d', mileage_text) else 0
 
-            # Extract fuel type
             fuel_tag = listing.find("dd", {"data-parameter": "fuel_type"})
             fuel_type = fuel_tag.get_text(strip=True) if fuel_tag else ""
             if fuel_type.strip().lower() == "hybryda":
                 fuel_type = "Hybryda Plug-in"
 
-            # Extract price
-            price_tag = listing.find("h3", attrs={"data-sentry-element": "Price"})
-            if not price_tag:
-                # Try alternative selector
-                price_tag = listing.find("p", attrs={"data-testid": "ad-price"})
-            
-            if price_tag:
-                raw_price = price_tag.get_text(strip=True)
-                try:
-                    price_pln = int(raw_price.replace(" ", "").replace("PLN", "").replace("zł", ""))
-                except ValueError:
-                    price_pln = 0
-            else:
-                price_pln = 0
+            # Price extraction with new selector
+            price_pln = 0
+            price_container = listing.find("h3", class_=lambda c: c and "ewf7bkd4" in c)
+            if price_container:
+                price_span = price_container.find("span", class_="offer-price__number")
+                if price_span:
+                    raw_price = price_span.get_text(strip=True)
+                    try:
+                        price_pln = int(raw_price.replace(" ", ""))
+                    except ValueError:
+                        price_pln = 0
 
-            # Extract location
             location_tag = listing.find("p", class_="ooa-oj1jk2")
-            if not location_tag:
-                location_tag = listing.find("p", attrs={"data-testid": "location-date"})
-            
             location_str = location_tag.get_text(strip=True) if location_tag else ""
             city, voivodship = parse_location(location_str)
 
-            # Extract seller type
             seller_elem = listing.find("article", class_=lambda c: c and "ooa-12g3tpj" in c)
             seller_text = seller_elem.get_text(strip=True) if seller_elem else "Unknown"
             seller_type = "Prywatny sprzedawca" if "prywatny" in seller_text.lower() else "Firma"
 
-            # Generate other values
-            now = datetime.now()
-            scrape_date = now.strftime("%Y-%m-%d")
-            scrape_time = now.strftime("%H:%M:%S")
+            scrape_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             found_version = extract_version(full_name, full_desc)
 
-            # Create Car object
             car = Car(
-                auction_id="",  # Will be set later
-                link=cleaned_link,
+                auction_id="",
+                link=normalized_link,
                 full_name=full_name,
                 description=description,
                 year=year,
@@ -462,13 +440,11 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 voivodship=voivodship,
                 listing_status="Active",
                 version=found_version,
-                scrape_date=scrape_date,
-                scrape_time=scrape_time               
-                    )
+                scrape_date=scrape_date
+            )
             cars.append(car)
         except Exception as e:
-            logging.error(f"Error parsing listing: {e}")
-            
+            print(f"Error parsing listing: {e}")
     return cars
 
 def write_to_csv(cars: List[Car]) -> None:
