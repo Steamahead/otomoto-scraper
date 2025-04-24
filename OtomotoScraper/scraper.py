@@ -371,55 +371,84 @@ def extract_cars_from_html(html: str) -> List[Car]:
 
             full_name = a_tag.get_text(strip=True) if a_tag else ""
 
-            # --- DESCRIPTION EXTRACTION ---
-            # First try the standard subtitle
-            desc_tag = listing.find("p", attrs={"data-sentry-element": "SubTitle"})
-            if not desc_tag:
-                # Try alternative selector
-                desc_tag = listing.find("p", class_=lambda c: c and "ooa-1e4spvk" in c)
+            # --- DESCRIPTION AND ENGINE CAPACITY EXTRACTION ---
+            # Using the new selector: <p class="ekpvtd0 ooa-1gjazjm">
+            details_tag = listing.find("p", class_=lambda c: c and ("ekpvtd0" in c or "ooa-1gjazjm" in c))
             
-            full_desc = desc_tag.get_text(strip=True) if desc_tag else ""
+            if not details_tag:
+                # Try the previous selectors as backup
+                details_tag = listing.find("p", attrs={"data-sentry-element": "SubTitle"})
+                if not details_tag:
+                    details_tag = listing.find("p", class_=lambda c: c and "ooa-1e4spvk" in c)
             
-            # If we have a description, split it by bullets
-            parts = [part.strip() for part in full_desc.split("•") if part.strip()]
+            full_details = details_tag.get_text(strip=True) if details_tag else ""
             
-            # Set description from parts OR use a fallback
-            if len(parts) >= 3:
-                description = " • ".join(parts[2:])
-            else:
-                # If we're missing parts, use what we have
-                description = full_desc
-                
-            # --- ENGINE CAPACITY EXTRACTION ---
+            # Split by bullet points
+            parts = [part.strip() for part in full_details.split("•") if part.strip()]
+            
+            # Extract engine capacity from first part
             engine_capacity_clean = 0
+            engine_power = ""
+            description = ""
             
-            # Method 1: Look for the SVG engine icon and get the next p element
-            svg_engine = listing.find('svg', class_='ooa-c3wb15')
-            if svg_engine:
-                # First check for the exact class we know
-                p_after_svg = svg_engine.find_next('p', class_=lambda c: c and "ez0zock2" in c)
+            if parts:
+                # First part should be engine capacity
+                engine_capacity_text = parts[0]
+                engine_capacity_clean = int(re.sub(r'\D', '', engine_capacity_text)) if re.search(r'\d', engine_capacity_text) else 0
                 
-                if not p_after_svg:
-                    # Try any p element near the SVG
-                    p_after_svg = svg_engine.find_next('p')
-                    
-                if p_after_svg:
-                    capacity_text = p_after_svg.get_text(strip=True)
-                    digits = re.sub(r'\D', '', capacity_text)  # Extract only digits
-                    if digits:
-                        engine_capacity_clean = int(digits)
-                        
-            # Method 2: Fallback to first part of description if SVG method failed
-            if engine_capacity_clean == 0 and parts:
-                engine_capacity_text = parts[0] if len(parts) >= 1 else ""
-                engine_capacity_clean = int(re.sub(r'\D', '', engine_capacity_text)) if engine_capacity_text and re.search(
-                    r'\d', engine_capacity_text) else 0
+                # Second part (if available) should be engine power
+                if len(parts) >= 2:
+                    engine_power = parts[1].strip()
+                
+                # Everything else is description
+                if len(parts) >= 3:
+                    description = " • ".join(parts[2:]).strip()
+            
+            # --- PRICE EXTRACTION ---
+            # Using the new price selector: <div class="ooa-rz87wg e1xre11z0"> with <h3> inside
+            price_pln = 0
+            
+            # Try the new price container
+            price_container = listing.find("div", class_=lambda c: c and ("ooa-rz87wg" in c or "e1xre11z0" in c))
+            if price_container:
+                price_h3 = price_container.find("h3")
+                if price_h3:
+                    raw_price = price_h3.get_text(strip=True)
+                    try:
+                        price_pln = int(raw_price.replace(" ", ""))
+                        logging.info(f"Found price using new selector: {price_pln}")
+                    except ValueError:
+                        price_pln = 0
+            
+            # If we still don't have a price, try the old selectors
+            if price_pln == 0:
+                # Try the previous price selectors
+                price_h3_alt = listing.find("h3", class_=lambda c: c and "ewf7bkd4" in c)
+                if price_h3_alt:
+                    price_span = price_h3_alt.find("span", class_="offer-price__number")
+                    if price_span:
+                        raw_price = price_span.get_text(strip=True)
+                        try:
+                            price_pln = int(raw_price.replace(" ", ""))
+                        except ValueError:
+                            price_pln = 0
+            
+            if price_pln == 0:
+                # Try other alternative price selectors
+                for price_selector in [
+                    {"element": "h3", "attrs": {"data-sentry-element": "Price"}},
+                    {"element": "p", "attrs": {"data-testid": "ad-price"}}
+                ]:
+                    price_elem = listing.find(price_selector["element"], attrs=price_selector["attrs"])
+                    if price_elem:
+                        raw_price = price_elem.get_text(strip=True)
+                        try:
+                            price_pln = int(re.sub(r'\D', '', raw_price))
+                            break
+                        except ValueError:
+                            continue
 
-            # Extract engine power from the second part if available
-            engine_power = parts[1] if len(parts) >= 2 else ""
-
-            # --- YEAR, MILEAGE, FUEL TYPE ---
-            # These seem to work fine in your code
+            # Extract year, mileage, fuel type (these seem to work fine)
             year_tag = listing.find("dd", {"data-parameter": "year"})
             year_str = year_tag.get_text(strip=True) if year_tag else "0"
             try:
@@ -436,36 +465,6 @@ def extract_cars_from_html(html: str) -> List[Car]:
             fuel_type = fuel_tag.get_text(strip=True) if fuel_tag else ""
             if fuel_type.strip().lower() == "hybryda":
                 fuel_type = "Hybryda Plug-in"
-
-            # --- PRICE EXTRACTION ---
-            price_pln = 0
-            
-            # Method 1: Look for the new price container structure
-            price_container = listing.find("h3", class_=lambda c: c and "ewf7bkd4" in c)
-            if price_container:
-                price_number = price_container.find("span", class_="offer-price__number")
-                if price_number:
-                    raw_price = price_number.get_text(strip=True)
-                    try:
-                        price_pln = int(raw_price.replace(" ", ""))
-                    except ValueError:
-                        price_pln = 0
-                 
-            # Method 2: Try alternate price selectors if the first method failed
-            if price_pln == 0:
-                # First try the data-sentry-element attribute
-                alternate_price = listing.find("h3", attrs={"data-sentry-element": "Price"})
-                if not alternate_price:
-                    # Then try the data-testid attribute
-                    alternate_price = listing.find("p", attrs={"data-testid": "ad-price"})
-                
-                if alternate_price:
-                    raw_price = alternate_price.get_text(strip=True)
-                    try:
-                        price_pln = int(re.sub(r'\D', '', raw_price))
-                    except ValueError:
-                        price_pln = 0
-
 
             # Extract location
             location_tag = listing.find("p", class_=lambda c: c and "ooa-oj1jk2" in c)
@@ -484,11 +483,11 @@ def extract_cars_from_html(html: str) -> List[Car]:
             now = datetime.now()
             scrape_date = now.strftime("%Y-%m-%d")
             scrape_time = now.strftime("%H:%M:%S")
-            found_version = extract_version(full_name, full_desc)
+            found_version = extract_version(full_name, full_details)
 
-            # Debug info
-            logging.info(f"Extracted data - Title: {full_name[:30]}, Price: {price_pln}, Engine: {engine_capacity_clean}")
-
+            # Debug logging
+            logging.info(f"Extracted: Name: {full_name[:30]} | Price: {price_pln} | Engine: {engine_capacity_clean}")
+            
             # Create Car object
             car = Car(
                 auction_id="",  # Will be set later
