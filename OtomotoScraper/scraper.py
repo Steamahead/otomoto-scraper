@@ -443,7 +443,9 @@ def extract_cars_from_html(html: str) -> List[Car]:
             seller_type = "Prywatny sprzedawca" if "prywatny" in seller_text.lower() else "Firma"
 
             # Generate other values
-            scrape_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now = datetime.now()
+            scrape_date = now.strftime("%Y-%m-%d")
+            scrape_time = now.strftime("%H:%M:%S")
             found_version = extract_version(full_name, full_desc)
 
             # Create Car object
@@ -463,7 +465,8 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 voivodship=voivodship,
                 listing_status="Active",
                 version=found_version,
-                scrape_date=scrape_date
+                scrape_date=scrape_date,
+                scrape_time=scrape_time 
             )
             cars.append(car)
         except Exception as e:
