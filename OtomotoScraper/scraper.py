@@ -450,18 +450,22 @@ def extract_cars_from_html(html: str) -> List[Car]:
                         price_pln = int(raw_price.replace(" ", ""))
                     except ValueError:
                         price_pln = 0
-            
+                 
             # Method 2: Try alternate price selectors if the first method failed
             if price_pln == 0:
-                alternate_price = listing.find(["h3", "p"], attrs=lambda attrs: attrs and 
-                                              (attrs.get("data-sentry-element") == "Price" or 
-                                               attrs.get("data-testid") == "ad-price"))
+                # First try the data-sentry-element attribute
+                alternate_price = listing.find("h3", attrs={"data-sentry-element": "Price"})
+                if not alternate_price:
+                    # Then try the data-testid attribute
+                    alternate_price = listing.find("p", attrs={"data-testid": "ad-price"})
+                
                 if alternate_price:
                     raw_price = alternate_price.get_text(strip=True)
                     try:
                         price_pln = int(re.sub(r'\D', '', raw_price))
                     except ValueError:
                         price_pln = 0
+
 
             # Extract location
             location_tag = listing.find("p", class_=lambda c: c and "ooa-oj1jk2" in c)
