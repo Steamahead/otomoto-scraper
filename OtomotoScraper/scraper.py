@@ -282,139 +282,215 @@ def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
         soup = BeautifulSoup(html, "html.parser")
         total_auctions = 0
         total_pages = 1
-
-        # NEW SELECTOR: Find the span that directly contains the count
-        # Example tag: <span class="ooa-1a5z4zz e1i3e5i41">Liczba ogłoszeń: 344</span>
-        count_span = soup.find("span", class_=lambda c: c and "ooa-1a5z4zz" in c)
-        if count_span:
-            text = count_span.get_text()
-            match = re.search(r'(\d+)', text)
+        
+        # Find total auctions from h1 text
+        h1_tag = soup.find("h1")
+        if h1_tag:
+            h1_text = h1_tag.get_text()
+            match = re.search(r'(\d+)\s+ogłosz', h1_text)
             if match:
                 total_auctions = int(match.group(1))
-                debug_print(f"Found total auctions from new span selector: {total_auctions}")
-
-        # Fallback to the old h1 method just in case
+                debug_print(f"Found total auctions from h1: {total_auctions}")
+        
+        # Find total auctions from text if not found in h1
         if total_auctions == 0:
-            h1_tag = soup.find("h1")
-            if h1_tag:
-                h1_text = h1_tag.get_text()
-                match = re.search(r'(\d+)\s+ogłosz', h1_text)
+            texts_with_counts = soup.find_all(string=re.compile(r'\d+\s+ogłosz'))
+            for text in texts_with_counts:
+                match = re.search(r'(\d+)\s+ogłosz', text)
                 if match:
                     total_auctions = int(match.group(1))
-                    debug_print(f"Found total auctions from h1 fallback: {total_auctions}")
+                    debug_print(f"Found total auctions from text: {total_auctions}")
+                    break
         
-        # Calculate total pages
-        if total_auctions > 0:
+        # Find pagination
+        pagination = soup.find("ul", class_=lambda x: x and "pagination" in x)
+        if pagination:
+            page_numbers = [int(li.get_text(strip=True)) for li in pagination.find_all("li")
+                            if li.get_text(strip=True).isdigit()]
+            if page_numbers:
+                total_pages = max(page_numbers)
+                debug_print(f"Found total pages from pagination: {total_pages}")
+        
+        # Calculate total pages if not found
+        if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
             total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
-            debug_print(f"Calculated total pages: {total_pages}")
-        else:
-            # If no auctions are found, use the pagination component as a last resort
-            pagination_last = soup.find("li", attrs={"data-testid": "pagination-list-item-last"})
-            if pagination_last and pagination_last.a:
-                total_pages = int(pagination_last.a.get_text(strip=True))
-                debug_print(f"Found total pages from pagination component: {total_pages}")
-
-
-        # If still nothing, use defaults
+            debug_print(f"Estimated total pages from auction count: {total_pages}")
+        
+        # Calculate total auctions if not found
+        if total_auctions == 0 and total_pages > 1:
+            total_auctions = total_pages * EXPECTED_PER_PAGE
+            debug_print(f"Estimated total auctions from page count: {total_auctions}")
+        
+        # Use defaults if nothing found
         if total_auctions == 0:
-            total_auctions = 320 # Default fallback
-            total_pages = 10
-            debug_print(f"Using default auction count and pages: {total_auctions}, {total_pages}")
+            total_auctions = 320
+            debug_print(f"Using default auction count: {total_auctions}")
+        if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
+            total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
+            debug_print(f"Using calculated page count: {total_pages}")
             
         return total_auctions, total_pages
     except Exception as e:
         logging.error(f"Error getting auction counts: {e}")
-        return 320, 10 # Default fallback
+        return 320, 10
 
 def extract_cars_from_html(html: str) -> List[Car]:
-    """
-    Updated function to extract car data using more robust data-testid selectors.
-    """
     cars: List[Car] = []
     soup = BeautifulSoup(html, "html.parser")
 
-    # The main container for search results
+    # Try to find the container with multiple possible selectors
     container = soup.find("div", {"data-testid": "search-results"})
     if not container:
-        logging.warning("Search results container (data-testid='search-results') not found.")
-        # Add a debug log to see what we received instead
-        logging.debug(f"HTML received (first 500 chars): {html[:500]}")
+        # Try alternative selectors if the primary one fails
+        container = soup.find("div", class_=lambda c: c and "ooa-1e1uucc" in c)
+
+    if not container:
+        logging.error("Search results container not found in HTML!")
         return cars
 
-    # Find all listing articles
-    listings = container.find_all("article", {"data-testid": "listing-ad"})
+    # Find all listings
+    listings = container.find_all("article", attrs={"data-id": True})
     
-    if not listings:
-        logging.warning("No articles with data-testid='listing-ad' found in the container.")
-
     for listing in listings:
         try:
-            # Get title and link from the h1 tag
-            h1_tag = listing.find("h1")
-            a_tag = h1_tag.find("a", href=True) if h1_tag else None
-            
-            if not a_tag:
-                logging.warning("Could not find title 'a' tag in listing.")
-                continue
+            # Get title and link
+            h2_tag = listing.find("h2", class_=lambda c: c and "ooa-1jjzghu" in c)
+            if not h2_tag:
+                # Try alternative selector
+                h2_tag = listing.find("h2", {"data-testid": "ad-title"})
+                if not h2_tag:
+                    continue
 
-            raw_link = a_tag["href"]
+            a_tag = h2_tag.find("a", href=True)
+            raw_link = a_tag["href"] if a_tag else ""
             cleaned_link = basic_url_cleanup(raw_link)
 
             # Skip if the URL doesn't match our required prefix
             if not cleaned_link.startswith(REQUIRED_PREFIX):
                 continue
 
-            full_name = a_tag.get_text(strip=True)
+            full_name = a_tag.get_text(strip=True) if a_tag else ""
 
-            # --- KEY PARAMETERS (Year, Mileage, Fuel, etc.) ---
-            params_list = listing.find("dl")
-            params = {}
-            if params_list:
-                dt_tags = params_list.find_all("dt")
-                dd_tags = params_list.find_all("dd")
-                for dt, dd in zip(dt_tags, dd_tags):
-                    key = dt.get_text(strip=True).lower()
-                    value = dd.get_text(strip=True)
-                    params[key] = value
-
-            year = int(params.get("rok produkcji", 0))
-            mileage_text = params.get("przebieg", "0 km")
-            mileage_clean = int(re.sub(r'\D', '', mileage_text))
-            fuel_type = params.get("rodzaj paliwa", "")
-            engine_capacity_text = params.get("pojemność skokowa", "0 cm3")
-            engine_capacity_clean = int(re.sub(r'\D', '', engine_capacity_text))
-            engine_power = params.get("moc", "")
-
-            # --- PRICE EXTRACTION ---
-            price_elem = listing.find("span", {"data-testid": "ad-price"})
-            price_pln = 0
-            if price_elem:
-                raw_price = price_elem.get_text(strip=True)
-                price_pln = int(re.sub(r'\D', '', raw_price))
-
-            # --- LOCATION EXTRACTION ---
-            location_elem = listing.find("p", {"data-testid": "ad-location"})
-            location_text = location_elem.get_text(strip=True) if location_elem else ""
-            city, voivodship = parse_location(location_text)
-
-            # --- SELLER & DESCRIPTION ---
-            # There is no longer a simple description snippet. We will leave it blank for now.
-            description = ""
-            seller_type = "Firma" # Defaulting to Firma as it's harder to distinguish now
+            # --- DESCRIPTION AND ENGINE CAPACITY EXTRACTION ---
+            # Using the new selector: <p class="ekpvtd0 ooa-1gjazjm">
+            details_tag = listing.find("p", class_=lambda c: c and ("ekpvtd0" in c or "ooa-1gjazjm" in c))
             
-            if "osoby prywatnej" in listing.prettify().lower():
-                seller_type = "Prywatny sprzedawca"
+            if not details_tag:
+                # Try the previous selectors as backup
+                details_tag = listing.find("p", attrs={"data-sentry-element": "SubTitle"})
+                if not details_tag:
+                    details_tag = listing.find("p", class_=lambda c: c and "ooa-1e4spvk" in c)
+            
+            full_details = details_tag.get_text(strip=True) if details_tag else ""
+            
+            # Split by bullet points
+            parts = [part.strip() for part in full_details.split("•") if part.strip()]
+            
+            # Extract engine capacity from first part
+            engine_capacity_clean = 0
+            engine_power = ""
+            description = ""
+            
+            if parts:
+                # First part should be engine capacity
+                engine_capacity_text = parts[0]
+                engine_capacity_clean = int(re.sub(r'\D', '', engine_capacity_text)) if re.search(r'\d', engine_capacity_text) else 0
+                
+                # Second part (if available) should be engine power
+                if len(parts) >= 2:
+                    engine_power = parts[1].strip()
+                
+                # Everything else is description
+                if len(parts) >= 3:
+                    description = " • ".join(parts[2:]).strip()
+            
+            # --- PRICE EXTRACTION ---
+            # Using the new price selector: <div class="ooa-rz87wg e1xre11z0"> with <h3> inside
+            price_pln = 0
+            
+            # Try the new price container
+            price_container = listing.find("div", class_=lambda c: c and ("ooa-rz87wg" in c or "e1xre11z0" in c))
+            if price_container:
+                price_h3 = price_container.find("h3")
+                if price_h3:
+                    raw_price = price_h3.get_text(strip=True)
+                    try:
+                        price_pln = int(raw_price.replace(" ", ""))
+                        logging.info(f"Found price using new selector: {price_pln}")
+                    except ValueError:
+                        price_pln = 0
+            
+            # If we still don't have a price, try the old selectors
+            if price_pln == 0:
+                # Try the previous price selectors
+                price_h3_alt = listing.find("h3", class_=lambda c: c and "ewf7bkd4" in c)
+                if price_h3_alt:
+                    price_span = price_h3_alt.find("span", class_="offer-price__number")
+                    if price_span:
+                        raw_price = price_span.get_text(strip=True)
+                        try:
+                            price_pln = int(raw_price.replace(" ", ""))
+                        except ValueError:
+                            price_pln = 0
+            
+            if price_pln == 0:
+                # Try other alternative price selectors
+                for price_selector in [
+                    {"element": "h3", "attrs": {"data-sentry-element": "Price"}},
+                    {"element": "p", "attrs": {"data-testid": "ad-price"}}
+                ]:
+                    price_elem = listing.find(price_selector["element"], attrs=price_selector["attrs"])
+                    if price_elem:
+                        raw_price = price_elem.get_text(strip=True)
+                        try:
+                            price_pln = int(re.sub(r'\D', '', raw_price))
+                            break
+                        except ValueError:
+                            continue
 
-            # --- CREATE CAR OBJECT ---
+            # Extract year, mileage, fuel type (these seem to work fine)
+            year_tag = listing.find("dd", {"data-parameter": "year"})
+            year_str = year_tag.get_text(strip=True) if year_tag else "0"
+            try:
+                year = int(year_str)
+            except ValueError:
+                year = 0
+
+            mileage_tag = listing.find("dd", {"data-parameter": "mileage"})
+            mileage_text = mileage_tag.get_text(strip=True) if mileage_tag else ""
+            mileage_clean = int(re.sub(r'\D', '', mileage_text)) if mileage_text and re.search(r'\d',
+                                                                                              mileage_text) else 0
+
+            fuel_tag = listing.find("dd", {"data-parameter": "fuel_type"})
+            fuel_type = fuel_tag.get_text(strip=True) if fuel_tag else ""
+            if fuel_type.strip().lower() == "hybryda":
+                fuel_type = "Hybryda Plug-in"
+
+            # Extract location
+            location_tag = listing.find("p", class_=lambda c: c and "ooa-oj1jk2" in c)
+            if not location_tag:
+                location_tag = listing.find("p", attrs={"data-testid": "location-date"})
+            
+            location_str = location_tag.get_text(strip=True) if location_tag else ""
+            city, voivodship = parse_location(location_str)
+
+            # Extract seller type
+            seller_elem = listing.find("article", class_=lambda c: c and "ooa-12g3tpj" in c)
+            seller_text = seller_elem.get_text(strip=True) if seller_elem else "Unknown"
+            seller_type = "Prywatny sprzedawca" if "prywatny" in seller_text.lower() else "Firma"
+
+            # Generate other values
             now = datetime.now()
             scrape_date = now.strftime("%Y-%m-%d")
             scrape_time = now.strftime("%H:%M:%S")
-            found_version = extract_version(full_name, "") # Description is no longer available in the list view
+            found_version = extract_version(full_name, full_details)
 
-            logging.info(f"Extracted: {full_name[:40]}... | Price: {price_pln} | Year: {year}")
-
+            # Debug logging
+            logging.info(f"Extracted: Name: {full_name[:30]} | Price: {price_pln} | Engine: {engine_capacity_clean}")
+            
+            # Create Car object
             car = Car(
-                auction_id="",
+                auction_id="",  # Will be set later
                 link=cleaned_link,
                 full_name=full_name,
                 description=description,
@@ -430,19 +506,15 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 listing_status="Active",
                 version=found_version,
                 scrape_date=scrape_date,
-                scrape_time=scrape_time
+                scrape_time=scrape_time 
             )
             cars.append(car)
-
         except Exception as e:
-            logging.error(f"Error parsing a listing: {e}")
+            logging.error(f"Error parsing listing: {e}")
             import traceback
             logging.error(traceback.format_exc())
-            # Log the problematic listing's HTML for debugging
-            # logging.debug(f"Problematic Article HTML: {listing.prettify()}")
 
     return cars
-
 
 def write_to_csv(cars: List[Car]) -> None:
     try:
