@@ -98,7 +98,7 @@ def get_sql_connection():
         import traceback
         logging.error(traceback.format_exc())
         return None
-                
+
 def compute_auction_key(url: str) -> str:
     """Compute a stable unique key (MD5 hash) from the auction URL."""
     return hashlib.md5(url.encode('utf-8')).hexdigest()
@@ -107,20 +107,20 @@ def get_auction_number(auction_key: str) -> int:
     """Checks if an AuctionNumber already exists for the given AuctionKey."""
     logging.info(f"Getting auction number for key: {auction_key}")
     connection = None
-    
+
     try:
         connection = get_sql_connection()
         if not connection:
             logging.error("Failed to establish database connection")
             return 1000000  # Default value
-            
+
         cursor = connection.cursor()
-        
+
         # Check for existing auction number
         query = "SELECT TOP 1 AuctionNumber FROM Listings WHERE AuctionKey = %s ORDER BY CreatedDate DESC"
         cursor.execute(query, (auction_key,))
         row = cursor.fetchone()
-        
+
         if row:
             auction_number = row[0]
             logging.info(f"Found existing auction number: {auction_number}")
@@ -129,7 +129,7 @@ def get_auction_number(auction_key: str) -> int:
             max_query = "SELECT ISNULL(MAX(AuctionNumber), 0) FROM Listings"
             cursor.execute(max_query)
             max_val = cursor.fetchone()[0]
-            auction_number = int(max_val) + 1 
+            auction_number = int(max_val) + 1
             logging.info(f"Created new auction number: {auction_number}")
 
         return auction_number
@@ -151,15 +151,15 @@ def insert_into_db(car: Car) -> int:
     logging.info(f"Inserting into database: {car.full_name[:30]}")
     connection = None
     cursor = None
-    
+
     try:
         connection = get_sql_connection()
         if not connection:
             logging.error(f"Failed to establish database connection for car: {car.full_name}")
             return None
-            
+
         cursor = connection.cursor()
-        
+
         try:
             auction_key = compute_auction_key(car.link)
             auction_number = get_auction_number(auction_key)
@@ -172,7 +172,7 @@ def insert_into_db(car: Car) -> int:
                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                SELECT SCOPE_IDENTITY();
                """
-               
+
             params = (
                 car.link,
                 auction_key,
@@ -268,7 +268,7 @@ def get_page_html(url: str) -> str:
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Referer': 'https://www.otomoto.pl/'
     }
-    
+
     try:
         response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
@@ -280,56 +280,32 @@ def get_page_html(url: str) -> str:
 def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
     try:
         soup = BeautifulSoup(html, "html.parser")
-        total_auctions = 0
-        total_pages = 1
         
-        # Find total auctions from h1 text
+        # Find the button that shows the number of results
+        results_button = soup.find('button', {'data-testid': 'search-show-more-button'})
+        if results_button:
+            results_text = results_button.get_text(strip=True)
+            match = re.search(r'(\d+)', results_text)
+            if match:
+                total_auctions = int(match.group(1))
+                total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
+                debug_print(f"Found total auctions from button: {total_auctions}, pages: {total_pages}")
+                return total_auctions, total_pages
+
+        # Fallback to searching the h1 tag
         h1_tag = soup.find("h1")
         if h1_tag:
             h1_text = h1_tag.get_text()
             match = re.search(r'(\d+)\s+ogłosz', h1_text)
             if match:
                 total_auctions = int(match.group(1))
-                debug_print(f"Found total auctions from h1: {total_auctions}")
+                total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
+                debug_print(f"Found total auctions from h1: {total_auctions}, pages: {total_pages}")
+                return total_auctions, total_pages
         
-        # Find total auctions from text if not found in h1
-        if total_auctions == 0:
-            texts_with_counts = soup.find_all(string=re.compile(r'\d+\s+ogłosz'))
-            for text in texts_with_counts:
-                match = re.search(r'(\d+)\s+ogłosz', text)
-                if match:
-                    total_auctions = int(match.group(1))
-                    debug_print(f"Found total auctions from text: {total_auctions}")
-                    break
-        
-        # Find pagination
-        pagination = soup.find("ul", class_=lambda x: x and "pagination" in x)
-        if pagination:
-            page_numbers = [int(li.get_text(strip=True)) for li in pagination.find_all("li")
-                            if li.get_text(strip=True).isdigit()]
-            if page_numbers:
-                total_pages = max(page_numbers)
-                debug_print(f"Found total pages from pagination: {total_pages}")
-        
-        # Calculate total pages if not found
-        if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
-            total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
-            debug_print(f"Estimated total pages from auction count: {total_pages}")
-        
-        # Calculate total auctions if not found
-        if total_auctions == 0 and total_pages > 1:
-            total_auctions = total_pages * EXPECTED_PER_PAGE
-            debug_print(f"Estimated total auctions from page count: {total_auctions}")
-        
-        # Use defaults if nothing found
-        if total_auctions == 0:
-            total_auctions = 320
-            debug_print(f"Using default auction count: {total_auctions}")
-        if total_pages == 1 and total_auctions > EXPECTED_PER_PAGE:
-            total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
-            debug_print(f"Using calculated page count: {total_pages}")
-            
-        return total_auctions, total_pages
+        # Default if nothing is found
+        debug_print("Could not find total auctions, using default values.")
+        return 320, 10
     except Exception as e:
         logging.error(f"Error getting auction counts: {e}")
         return 320, 10
@@ -344,7 +320,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
         logging.error("Search results container not found in HTML!")
         return cars
 
-    # Find all listings within the container
+    # Find all listings within the container, now using a more generic 'article' tag
     listings = container.find_all("article")
 
     for listing in listings:
@@ -376,7 +352,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
                     price_pln = 0
             
             # --- DETAILS EXTRACTION ---
-            # Year, Mileage, Fuel Type, Engine Capacity
+            # Year, Mileage, Fuel Type, Engine Capacity are in a <dl> tag
             details_container = listing.find("dl")
             year, mileage_km, engine_capacity, fuel_type = 0, 0, 0, ""
 
@@ -406,10 +382,9 @@ def extract_cars_from_html(html: str) -> List[Car]:
 
 
             # --- LOCATION AND SELLER ---
-            # This information is less consistently available. 
-            # We'll make a best effort to find it.
-            location_and_seller_p = listing.find_all("p")[-1] # Often the last <p> tag
-            location_str = location_and_seller_p.get_text(strip=True) if location_and_seller_p else ""
+            # The location and seller info is often in the last <p> tag of the listing
+            all_p_tags = listing.find_all("p")
+            location_str = all_p_tags[-1].get_text(strip=True) if all_p_tags else ""
             city, voivodship = parse_location(location_str)
             
             seller_type = "Firma" if "dealer" in location_str.lower() else "Prywatny sprzedawca"
@@ -419,7 +394,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
             now = datetime.now()
             scrape_date = now.strftime("%Y-%m-%d")
             scrape_time = now.strftime("%H:%M:%S")
-            description = "" # Description is no longer easily available on the search results page
+            description = "" # Description is no longer available on the search results page
             found_version = extract_version(full_name, description)
             engine_power = "" # Engine power is not on the search results page anymore
 
