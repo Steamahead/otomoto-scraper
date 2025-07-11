@@ -247,7 +247,7 @@ def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
 
 def extract_version(full_name: str, description: str) -> str:
     for cand in CANDIDATE_VERSIONS:
-        if fuzzy_.contains(cand, full_name, 0.9) or fuzzy_contains(cand, description, 0.9):
+        if fuzzy_contains(cand, full_name, 0.9) or fuzzy_contains(cand, description, 0.9):
             return cand
     return ""
 
