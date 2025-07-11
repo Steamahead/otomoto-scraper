@@ -247,7 +247,7 @@ def fuzzy_contains(candidate: str, text: str, cutoff: float = 0.9) -> bool:
 
 def extract_version(full_name: str, description: str) -> str:
     for cand in CANDIDATE_VERSIONS:
-        if fuzzy_contains(cand, full_name, 0.9) or fuzzy_contains(cand, description, 0.9):
+        if fuzzy_.contains(cand, full_name, 0.9) or fuzzy_contains(cand, description, 0.9):
             return cand
     return ""
 
@@ -281,29 +281,18 @@ def get_total_auction_count_and_pages(html: str) -> Tuple[int, int]:
     try:
         soup = BeautifulSoup(html, "html.parser")
         
-        # Find the button that shows the number of results
-        results_button = soup.find('button', {'data-testid': 'search-show-more-button'})
-        if results_button:
-            results_text = results_button.get_text(strip=True)
-            match = re.search(r'(\d+)', results_text)
-            if match:
-                total_auctions = int(match.group(1))
-                total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
-                debug_print(f"Found total auctions from button: {total_auctions}, pages: {total_pages}")
-                return total_auctions, total_pages
-
-        # Fallback to searching the h1 tag
+        # Find the h1 tag, which contains the total number of ads
         h1_tag = soup.find("h1")
         if h1_tag:
-            h1_text = h1_tag.get_text()
-            match = re.search(r'(\d+)\s+ogłosz', h1_text)
+            h1_text = h1_tag.get_text(strip=True)
+            # Use regex to find the number of ads
+            match = re.search(r'(\d+)\s+ogłoszeń', h1_text)
             if match:
                 total_auctions = int(match.group(1))
                 total_pages = (total_auctions + EXPECTED_PER_PAGE - 1) // EXPECTED_PER_PAGE
                 debug_print(f"Found total auctions from h1: {total_auctions}, pages: {total_pages}")
                 return total_auctions, total_pages
-        
-        # Default if nothing is found
+
         debug_print("Could not find total auctions, using default values.")
         return 320, 10
     except Exception as e:
@@ -314,45 +303,47 @@ def extract_cars_from_html(html: str) -> List[Car]:
     cars: List[Car] = []
     soup = BeautifulSoup(html, "html.parser")
 
-    # The main container for all the listings
-    container = soup.find("div", {"data-testid": "search-results"})
-    if not container:
-        logging.error("Search results container not found in HTML!")
+    # The main container for all the listings is a div with a specific data-testid
+    main_container = soup.find("div", {"data-testid": "search-results"})
+    if not main_container:
+        logging.error("Main search results container not found!")
         return cars
 
-    # Find all listings within the container, now using a more generic 'article' tag
-    listings = container.find_all("article")
-
+    # Find all the article tags which represent individual car listings
+    listings = main_container.find_all("article")
+    
     for listing in listings:
         try:
-            # Get title and link from the h1 tag
-            h1_tag = listing.find("h1")
-            a_tag = h1_tag.find("a", href=True) if h1_tag else None
-            
+            # The link and title are in an h2 tag
+            h2_tag = listing.find("h2")
+            if not h2_tag:
+                continue
+                
+            a_tag = h2_tag.find("a", href=True)
             if not a_tag:
                 continue
-
+            
             raw_link = a_tag["href"]
             cleaned_link = basic_url_cleanup(raw_link)
 
             # Skip if the URL doesn't match our required prefix
             if not cleaned_link.startswith(REQUIRED_PREFIX):
                 continue
-
+            
             full_name = a_tag.get_text(strip=True)
-
-            # --- PRICE EXTRACTION ---
+            
+            # The price is in an h3 tag
             price_pln = 0
             price_element = listing.find("h3")
             if price_element:
                 raw_price = price_element.get_text(strip=True)
                 try:
+                    # Remove non-digit characters to get the price
                     price_pln = int(re.sub(r'\D', '', raw_price))
                 except ValueError:
                     price_pln = 0
             
-            # --- DETAILS EXTRACTION ---
-            # Year, Mileage, Fuel Type, Engine Capacity are in a <dl> tag
+            # Year, Mileage, Fuel Type, and Engine Capacity are in a dl tag
             details_container = listing.find("dl")
             year, mileage_km, engine_capacity, fuel_type = 0, 0, 0, ""
 
@@ -364,12 +355,15 @@ def extract_cars_from_html(html: str) -> List[Car]:
                     "Rodzaj paliwa": ""
                 }
                 
+                # Iterate through the dt and dd tags to get the car's details
                 for dt, dd in zip(details_container.find_all("dt"), details_container.find_all("dd")):
                     param = dt.get_text(strip=True)
                     value = dd.get_text(strip=True)
                     if param in params:
+                        # Convert mileage and engine capacity to integers
                         if "Przebieg" in param or "Pojemność skokowa" in param:
                             params[param] = int(re.sub(r'\D', '', value))
+                        # Convert year to an integer
                         elif "Rok produkcji" in param:
                             params[param] = int(value)
                         else:
@@ -380,30 +374,28 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 engine_capacity = params.get("Pojemność skokowa", 0)
                 fuel_type = params.get("Rodzaj paliwa", "")
 
-
-            # --- LOCATION AND SELLER ---
-            # The location and seller info is often in the last <p> tag of the listing
-            all_p_tags = listing.find_all("p")
-            location_str = all_p_tags[-1].get_text(strip=True) if all_p_tags else ""
+            # Location information is in a p tag with a specific data-testid
+            location_tag = listing.find("p", {"data-testid": "location-date"})
+            location_str = location_tag.get_text(strip=True) if location_tag else ""
             city, voivodship = parse_location(location_str)
-            
+
+            # Seller type is hard to determine now, so we'll make a reasonable guess
             seller_type = "Firma" if "dealer" in location_str.lower() else "Prywatny sprzedawca"
 
-
-            # Generate other values
+            # Other details
             now = datetime.now()
             scrape_date = now.strftime("%Y-%m-%d")
             scrape_time = now.strftime("%H:%M:%S")
-            description = "" # Description is no longer available on the search results page
+            description = ""  # This is no longer on the search results page
             found_version = extract_version(full_name, description)
-            engine_power = "" # Engine power is not on the search results page anymore
+            engine_power = ""  # This is no longer on the search results page
 
-            # Debug logging
-            logging.info(f"Extracted: Name: {full_name[:30]} | Price: {price_pln} | Engine: {engine_capacity}")
+            # Debugging
+            logging.info(f"Extracted: {full_name[:30]} | Price: {price_pln} | Year: {year}")
 
-            # Create Car object
+            # Create the Car object
             car = Car(
-                auction_id="",  # Will be set later
+                auction_id="",
                 link=cleaned_link,
                 full_name=full_name,
                 description=description,
@@ -419,14 +411,15 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 listing_status="Active",
                 version=found_version,
                 scrape_date=scrape_date,
-                scrape_time=scrape_time
+                scrape_time=scrape_time,
             )
             cars.append(car)
+
         except Exception as e:
-            logging.error(f"Error parsing listing: {e}")
+            logging.error(f"Error parsing a listing: {e}")
             import traceback
             logging.error(traceback.format_exc())
-
+            
     return cars
 
 def write_to_csv(cars: List[Car]) -> None:
