@@ -38,7 +38,11 @@ CANDIDATE_VERSIONS = [
     "Bastille",
     "Pallas",
     "Etoile",
-    "La Premiere"
+    "La Premiere",
+    "Esprit de Voyage",
+    "So Chic",
+    "Be Chic",
+    "Edition France"
 ]
 
 @dataclass
@@ -331,8 +335,16 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 continue
             
             full_name = a_tag.get_text(strip=True)
+
+            # Get the detail page HTML to extract more data
+            detail_html = get_page_html(cleaned_link)
+            if not detail_html:
+                logging.error(f"Could not retrieve details page for {cleaned_link}")
+                continue
             
-            # The price is in an h3 tag
+            detail_soup = BeautifulSoup(detail_html, 'html.parser')
+            
+            # The price is in an h3 tag on the search result page
             price_pln = 0
             price_element = listing.find("h3")
             if price_element:
@@ -343,50 +355,49 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 except ValueError:
                     price_pln = 0
             
-            # Year, Mileage, Fuel Type, and Engine Capacity are in a dl tag
-            details_container = listing.find("dl")
-            year, mileage_km, engine_capacity, fuel_type = 0, 0, 0, ""
+            # --- NEW SELECTORS ---
+            # Extract Year from the details page
+            year = 0
+            year_tag = detail_soup.find('p', class_='e1kkw2jt0 ooa-vy37q4')
+            if year_tag:
+                year_match = re.search(r'\d{4}', year_tag.text)
+                if year_match:
+                    year = int(year_match.group(0))
 
-            if details_container:
-                params = {
-                    "Rok produkcji": 0,
-                    "Przebieg": 0,
-                    "Pojemność skokowa": 0,
-                    "Rodzaj paliwa": ""
-                }
-                
-                # Iterate through the dt and dd tags to get the car's details
-                for dt, dd in zip(details_container.find_all("dt"), details_container.find_all("dd")):
-                    param = dt.get_text(strip=True)
-                    value = dd.get_text(strip=True)
-                    if param in params:
-                        # Convert mileage and engine capacity to integers
-                        if "Przebieg" in param or "Pojemność skokowa" in param:
-                            params[param] = int(re.sub(r'\D', '', value))
-                        # Convert year to an integer
-                        elif "Rok produkcji" in param:
-                            params[param] = int(value)
-                        else:
-                            params[param] = value
+            # Extract Mileage, Engine Capacity, and Fuel Type from the details page
+            mileage_km, engine_capacity, fuel_type = 0, 0, ""
+            details_tags = detail_soup.find_all('p', class_='ez0zock2 ooa-11fwepm')
+            for tag in details_tags:
+                text = tag.get_text(strip=True)
+                if 'km' in text and 'KM' not in text:
+                    mileage_km = int(re.sub(r'\D', '', text))
+                elif 'cm3' in text:
+                    engine_capacity = int(re.sub(r'\D', '', text))
+                else:
+                    fuel_type = text # Assuming the remaining one is the fuel type
 
-                year = params.get("Rok produkcji", 0)
-                mileage_km = params.get("Przebieg", 0)
-                engine_capacity = params.get("Pojemność skokowa", 0)
-                fuel_type = params.get("Rodzaj paliwa", "")
+            # Extract Location from the details page
+            city, voivodship = "", ""
+            location_tag = detail_soup.find('p', class_='ef0vquw1 ooa-1frho3b')
+            if location_tag:
+                location_text = location_tag.get_text(strip=True)
+                match = re.search(r'\d{2}-\d{3}\s(.*?),\s(.*?)\s\(', location_text)
+                if match:
+                    city = match.group(1).strip()
+                    voivodship = match.group(2).strip()
 
-            # Location information is in a p tag with a specific data-testid
-            location_tag = listing.find("p", {"data-testid": "location-date"})
-            location_str = location_tag.get_text(strip=True) if location_tag else ""
-            city, voivodship = parse_location(location_str)
+            # Extract Seller Type from the details page
+            seller_type_tag = detail_soup.find('p', class_='ooa-1hl3hwd')
+            seller_type = seller_type_tag.get_text(strip=True) if seller_type_tag else ""
 
-            # Seller type is hard to determine now, so we'll make a reasonable guess
-            seller_type = "Firma" if "dealer" in location_str.lower() else "Prywatny sprzedawca"
-
+            # Extract Description
+            description_tag = detail_soup.find('p', class_='e1afgq2j0 ooa-w3crlp')
+            description = description_tag.get_text(strip=True) if description_tag else ""
+            
             # Other details
             now = datetime.now()
             scrape_date = now.strftime("%Y-%m-%d")
             scrape_time = now.strftime("%H:%M:%S")
-            description = ""  # This is no longer on the search results page
             found_version = extract_version(full_name, description)
             engine_power = ""  # This is no longer on the search results page
 
@@ -414,6 +425,9 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 scrape_time=scrape_time,
             )
             cars.append(car)
+
+            # Add a small delay to be a good web citizen
+            time.sleep(1)
 
         except Exception as e:
             logging.error(f"Error parsing a listing: {e}")
