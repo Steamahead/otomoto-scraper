@@ -256,9 +256,10 @@ def extract_version(full_name: str, description: str) -> str:
     return ""
 
 def parse_location(location_str: str) -> Tuple[str, str]:
-    if "(" in location_str and location_str.endswith(")"):
-        city, voivodship = location_str.split("(", 1)
-        return city.strip(), voivodship.rstrip(")").strip()
+    # Updated to handle "City, Voivodship" format
+    parts = location_str.split(',')
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip()
     return location_str.strip(), ""
 
 # ---------------------------
@@ -355,7 +356,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 except ValueError:
                     price_pln = 0
             
-            # --- NEW SELECTORS ---
+            # --- UPDATED SELECTORS ---
             # Extract Year from the details page
             year = 0
             year_tag = detail_soup.find('p', class_='e1kkw2jt0 ooa-vy37q4')
@@ -364,7 +365,7 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 if year_match:
                     year = int(year_match.group(0))
 
-            # Extract Mileage, Engine Capacity, and Fuel Type from the details page
+            # Extract Mileage, Engine Capacity, and Fuel Type
             mileage_km, engine_capacity, fuel_type = 0, 0, ""
             details_tags = detail_soup.find_all('p', class_='ez0zock2 ooa-11fwepm')
             for tag in details_tags:
@@ -372,28 +373,38 @@ def extract_cars_from_html(html: str) -> List[Car]:
                 if 'km' in text and 'KM' not in text:
                     mileage_km = int(re.sub(r'\D', '', text))
                 elif 'cm3' in text:
-                    engine_capacity = int(re.sub(r'\D', '', text))
-                else:
-                    fuel_type = text # Assuming the remaining one is the fuel type
+                    # Corrected regex for engine capacity
+                    engine_capacity_match = re.search(r'(\d\s?)+', text)
+                    if engine_capacity_match:
+                        engine_capacity = int(re.sub(r'\s', '', engine_capacity_match.group()))
+                elif any(fuel in text for fuel in ['Benzyna', 'Diesel', 'Hybryda Plug-in']):
+                    fuel_type = text
 
-            # Extract Location from the details page
+            # Extract Location
             city, voivodship = "", ""
             location_tag = detail_soup.find('p', class_='ef0vquw1 ooa-1frho3b')
             if location_tag:
                 location_text = location_tag.get_text(strip=True)
-                match = re.search(r'\d{2}-\d{3}\s(.*?),\s(.*?)\s\(', location_text)
-                if match:
-                    city = match.group(1).strip()
-                    voivodship = match.group(2).strip()
+                city, voivodship = parse_location(location_text)
 
-            # Extract Seller Type from the details page
-            seller_type_tag = detail_soup.find('p', class_='ooa-1hl3hwd')
-            seller_type = seller_type_tag.get_text(strip=True) if seller_type_tag else ""
+            # Extract Seller Type
+            seller_type = ""
+            seller_type_tags = detail_soup.find_all('p', class_='ooa-1hl3hwd')
+            for tag in seller_type_tags:
+                text = tag.get_text(strip=True)
+                if "Osoba prywatna" in text or "Autoryzowany Dealer" in text:
+                    seller_type = text
+                    break
 
             # Extract Description
+            description = ""
             description_tag = detail_soup.find('p', class_='e1afgq2j0 ooa-w3crlp')
-            description = description_tag.get_text(strip=True) if description_tag else ""
-            
+            if description_tag:
+                # Extract text after the '•'
+                parts = description_tag.get_text(strip=True).split('•')
+                if len(parts) > 1:
+                    description = '•'.join(parts[2:]).strip()
+
             # Other details
             now = datetime.now()
             scrape_date = now.strftime("%Y-%m-%d")
@@ -479,32 +490,11 @@ def run_scraper():
         logging.info(f"Total auctions found on the site: {total_auctions}")
         logging.info(f"Estimated total pages: {total_pages}")
         
-        # Process the first page HTML we already have
-        cars_on_page = extract_cars_from_html(html)
-        if cars_on_page:
-            for car in cars_on_page:
-                processed_counter += 1
-                auction_counter += 1
-                mileage_digits = str(car.mileage_km)
-                car.auction_id = f"{auction_counter}_{mileage_digits}_{car.price_pln}"
-                
-                # Insert into DB
-                try:
-                    db_id = insert_into_db(car)
-                    if db_id:
-                        logging.info(f"Database insertion successful, ID: {db_id}")
-                    else:
-                        logging.error("Database insertion failed")
-                except Exception as e:
-                    logging.error(f"Error during database insertion: {e}")
-                
-                all_cars.append(car)
-        
         # Determine how many pages to check
         pages_to_check = min(total_pages, MAX_PAGES_TO_CHECK)
         
-        # Now process remaining pages
-        for current_page in range(2, pages_to_check + 1):
+        # Process pages
+        for current_page in range(1, pages_to_check + 1):
             page_url = f"{BASE_URL}&page={current_page}"
             logging.info(f"\nFetching page {current_page} of {pages_to_check}: {page_url}")
             
